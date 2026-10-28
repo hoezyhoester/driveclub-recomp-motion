@@ -36,18 +36,21 @@ jobs:
 
       - name: Package
         run: |
-          set -o pipefail
-          bash packaging/package.sh "motion-rig-${GITHUB_SHA::7}" 2>&1 | tee package.log
-
-      # The end of the logs as one annotation, so it can be read without the
-      # full log (gh run view shows annotations).
-      - name: Report the failure
-        if: failure()
-        run: |
-          { echo "== package.log"; tail -60 package.log 2>/dev/null
-            echo "== out/gpu-build.log"; grep -v '^\[' out/gpu-build.log 2>/dev/null | tail -60; } > failure.txt
-          msg=$(sed 's/%/%25/g' failure.txt | awk '{printf "%s%%0A", $0}')
-          echo "::error title=Build failed::${msg}"
+          report() {   # the end of a log as one annotation (bash only), readable without the full log
+            local file=$1 lines=() msg="" i
+            [ -f "$file" ] || return 0
+            mapfile -t lines < "$file"
+            for ((i=${#lines[@]}>70 ? ${#lines[@]}-70 : 0; i<${#lines[@]}; ++i)); do
+              msg+="${lines[i]//%/%25}%0A"
+            done
+            echo "::error title=$file::$msg"
+          }
+          if ! bash packaging/package.sh "motion-rig-${GITHUB_SHA::7}" > package.log 2>&1; then
+            report package.log
+            report out/gpu-build.log
+            exit 1
+          fi
+          tail -n 20 package.log
 
       - uses: actions/upload-artifact@v4
         with:
