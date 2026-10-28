@@ -27,6 +27,7 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANG64
+          release: false   # the runner's own C:\msys64, which build.sh and package.sh put first on PATH
           update: true
           install: base-devel git zip grep sed gawk coreutils findutils
           pacboy: >-
