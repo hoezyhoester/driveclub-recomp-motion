@@ -50,6 +50,9 @@ Logs are in the `logs` folder.
 - A launcher window that resizes from every edge and corner and stays sharp at any display scale
 - A `mods` folder for loose-file mods: files in it replace the game's own files of the same path
 
+## Motion simulators
+The game sends what your car does - g-forces, bumps and kerbs per wheel, slides, the road's slope and impacts, all from the game's own physics - to a motion rig through [SpaceMonkey](https://github.com/PHARTGAMES/SpaceMonkey) (its DriveClub button), and from there to Sim Racing Studio, SimTools, SimFeedback, FlyPT Mover or SimHub. It is on by default and sends to this PC; see [docs/motion-rig.md](docs/motion-rig.md) for the settings and what is sent.
+
 ## Controls
 Any gamepad works. Keyboard, mouse and gamepad can be used at the same time.
 

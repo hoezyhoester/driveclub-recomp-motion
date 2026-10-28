@@ -1,0 +1,52 @@
+name: Build (motion rig)
+
+# Builds the player release - the launcher, the game runtime with the motion rig
+# telemetry (docs/motion-rig.md) and every library they load - as a zip to
+# download from the run's Artifacts. Nothing of the game is in it: it starts
+# from the player's own dumps, as the official releases do.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [motion-rig]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MSYS2 CLANG64 toolchain (BUILDING.md)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: git zip
+          pacboy: >-
+            toolchain:p clang:p cmake:p ninja:p pkgconf:p vulkan-headers:p vulkan-loader:p
+            vulkan-memory-allocator:p fmt:p boost:p robin-map:p xxhash:p sdl3:p zydis:p ffmpeg:p
+            protobuf:p nlohmann-json:p openssl:p zlib:p miniupnpc:p python:p
+
+      - name: Package
+        run: bash packaging/package.sh "motion-rig-${GITHUB_SHA::7}"
+
+      - name: Show the build log on failure
+        if: failure()
+        run: |
+          for log in out/gpu-build.log; do
+            [ -f "$log" ] && tail -200 "$log"
+          done
+          true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driveclub-recomp-motion-rig-win64
+          path: release/*.zip
+          retention-days: 30

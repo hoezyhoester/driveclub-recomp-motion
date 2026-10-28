@@ -1,4 +1,5 @@
 #include <math.h>
+static void rig_camera_observe(void *self);   /* runtime_rig_camera.inc */
 /* Camera-only derivatives over the original 30 Hz observation interval.
    Vehicle physics and camera transforms continue updating at render cadence. */
 typedef void (ABI *CameraTargetUpdate)(void *,unsigned,float);
@@ -82,6 +83,7 @@ static ABI void camera_target_update(void *self,unsigned frame,float dt) {
     int reset=*((unsigned char *)self+0x40)!=0 || previous+1!=frame;
     camera_target_update_original(self,frame,dt);
     if(previous!=frame) camera_motion_filter(self,dt,reset);
+    rig_camera_observe(self);   /* the motion rig (runtime_rig_camera.inc) */
 }
 static void camera_motion_install(void) {
     camera_motion_point_enabled=1;

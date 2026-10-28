@@ -165,6 +165,7 @@ static void parse_line(char *line) {
         return;
     }
     if (!strncmp(lhs,"wheel_",6)) { wheel_parse(lhs,rhs); return; }
+    if (!strcmp(lhs,"motion") || !strncmp(lhs,"motion_",7)) { runtime_rig_config(lhs,rhs); return; }   /* runtime_rig.c */
     if (!strcmp(lhs,"mouse_to_joystick")) { lower(rhs); mouse_target=!strcmp(rhs,"left") ? 1 : !strcmp(rhs,"right") ? 2 : 0; return; }
     if (!strcmp(lhs,"mouse_movement_params")) {
         float a,b,c; if (sscanf(rhs," %f , %f , %f",&a,&b,&c)==3) { mouse_dz_offset=a; mouse_speed=b; mouse_speed_offset=c; }

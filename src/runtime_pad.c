@@ -10,6 +10,7 @@
 #define _GNU_SOURCE
 #include "runtime.h"
 #include "runtime_exit.h"
+#include "runtime_rig.h"
 #include "gpu/bbgpu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,6 +111,19 @@ int runtime_pad_pedals(float *throttle, float *brake, float *clutch) {
     }
     if (!read) return 0;
     *throttle=(float)p.r2/255.0f; *brake=(float)p.l2/255.0f; *clutch=0.0f;
+    return 1;
+}
+/* The steering the game was last given, -1 (left) .. 1 (right), for the motion rig's packet: the wheel's, or the pad's
+ * left stick. 0 before anything was read. */
+int runtime_pad_steering(float *steering) {
+    pthread_mutex_lock(&lock);
+    WheelExtension w; memcpy(&w,wheel_last_read.extension,sizeof w);
+    const PadData p=pad_last_read;
+    const bool read=pad_was_read;
+    pthread_mutex_unlock(&lock);
+    if (w.magic==WHEEL_MAGIC) { *steering=((float)w.steer-32768.0f)/32767.0f; return 2; }
+    if (!read) return 0;
+    *steering=((float)p.left_x-128.0f)/127.0f;
     return 1;
 }
 
@@ -611,7 +625,13 @@ static void sample(PadData *d) {
     }
 }
 
-static ABI int32_t pad_init(void) { pthread_mutex_lock(&lock); initialized=1; pthread_mutex_unlock(&lock); return 0; }
+static ABI int32_t pad_init(void) {
+    pthread_mutex_lock(&lock); initialized=1; pthread_mutex_unlock(&lock);
+#ifdef _WIN32
+    ffb_hook_install();   /* the car's simulation for the motion rig too, wheel or not (it is idempotent) */
+#endif
+    return 0;
+}
 /* Opens are keyed like shadPS4's (user, type, index): the same key twice while open is "already opened", any other
  * logged-in user, port type or index gets the one physical pad. scePadOpenExt opens are keyed apart: logiWheel.prx
  * holds one on port type 2 for good, and the game's own scePadOpen of that port must still succeed. */
@@ -702,7 +722,7 @@ static void watch_install(void *address) {
 static ABI void ffb_inputs_hook(uint8_t *obj, const uint8_t *in, const uintptr_t *caller, uintptr_t ret) {
     memcpy(obj+0xf4,in,0x30);
     if (ret!=runtime_image_base+0xd93c3e) return;
-    if (!in[0]) { ffb_car.state=ffb_car.setup=ffb_car.sim=0; return; }   /* no car under the player's control */
+    if (!in[0]) { ffb_car.state=ffb_car.setup=ffb_car.sim=0; runtime_rig_no_car(); return; }   /* no car under the player's control */
     /* the caller has just read the block from these (+0xd9393d..+0xd93945), so they are valid */
     const uintptr_t iface=caller[-0x78/8];
     const uintptr_t state=*(const uintptr_t *)(iface+0x8), setup=*(const uintptr_t *)(iface+0x20), sim=*(const uintptr_t *)(setup+0x8);
@@ -710,6 +730,7 @@ static ABI void ffb_inputs_hook(uint8_t *obj, const uint8_t *in, const uintptr_t
     ffb_car.state=state; ffb_car.setup=setup; ffb_car.sim=sim;
     __atomic_store_n(&ffb_car.step_us,now_us(),__ATOMIC_RELEASE);
     if (ffb_physics) ffb_physics_step((const float *)state,in,setup);   /* the setup tells cars apart (the state's memory is reused) */
+    runtime_rig_physics_step((const float *)state,in);   /* motion rig telemetry (runtime_rig.c) */
 }
 static void ffb_hook_install(void) {
     static bool done;

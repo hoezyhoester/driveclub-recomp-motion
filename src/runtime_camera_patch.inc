@@ -14,7 +14,14 @@ static void *camera_rate_hook(size_t,const unsigned char *,size_t,uintptr_t);
 #include "runtime_replay_driver_observation.inc"
 #include "runtime_replay_hud_observation.inc"
 #include "runtime_replay_feedback.inc"
+#include "runtime_rig_camera.inc"
+static void camera_patch_install_patch(void);
+/* The camera patch when BB_CAMERA_PATCH=1, and the motion rig's camera observer always. */
 static void camera_patch_install(void) {
+    camera_patch_install_patch();
+    rig_camera_install();
+}
+static void camera_patch_install_patch(void) {
     const char *enabled=getenv("BB_CAMERA_PATCH");
     if(!enabled || strcmp(enabled,"1"))return;
     static const unsigned char update[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xe4,0xc0,0xff,0xff,0xff};
