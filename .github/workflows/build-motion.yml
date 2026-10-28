@@ -35,15 +35,19 @@ jobs:
             protobuf:p nlohmann-json:p openssl:p zlib:p miniupnpc:p python:p
 
       - name: Package
-        run: bash packaging/package.sh "motion-rig-${GITHUB_SHA::7}"
+        run: |
+          set -o pipefail
+          bash packaging/package.sh "motion-rig-${GITHUB_SHA::7}" 2>&1 | tee package.log
 
-      - name: Show the build log on failure
+      # The end of the logs as one annotation, so it can be read without the
+      # full log (gh run view shows annotations).
+      - name: Report the failure
         if: failure()
         run: |
-          for log in out/gpu-build.log; do
-            [ -f "$log" ] && tail -200 "$log"
-          done
-          true
+          { echo "== package.log"; tail -60 package.log 2>/dev/null
+            echo "== out/gpu-build.log"; grep -v '^\[' out/gpu-build.log 2>/dev/null | tail -60; } > failure.txt
+          msg=$(sed 's/%/%25/g' failure.txt | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Build failed::${msg}"
 
       - uses: actions/upload-artifact@v4
         with:
