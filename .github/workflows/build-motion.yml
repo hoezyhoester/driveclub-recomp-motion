@@ -11,7 +11,7 @@ on:
     branches: [motion-rig]
 
 permissions:
-  contents: read
+  contents: write   # a failed build pushes its logs to the ci-logs branch
 
 jobs:
   windows:
@@ -35,6 +35,8 @@ jobs:
             protobuf:p nlohmann-json:p openssl:p zlib:p miniupnpc:p python:p
 
       - name: Package
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           report() {   # the end of a log as one annotation (bash only), readable without the full log
             local file=$1 lines=() msg="" i
@@ -51,6 +53,11 @@ jobs:
           if ! bash packaging/package.sh "motion-rig-${GITHUB_SHA::7}" > package.log 2>&1; then
             report package.log
             report out/gpu-build.log
+            # the logs on the ci-logs branch, to read without the Actions website
+            mkdir -p ../ci-logs && cp package.log ../ci-logs/ && { cp out/gpu-build.log ../ci-logs/ 2>/dev/null || true; }
+            cd ../ci-logs && git init -q && git checkout -q -b ci-logs && git add -A &&
+              git -c user.name=ci -c user.email=ci@localhost commit -qm "logs of ${GITHUB_SHA::7}" &&
+              git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-logs || true
             exit 1
           fi
           tail -n 20 package.log
