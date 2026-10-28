@@ -40,10 +40,13 @@ jobs:
             local file=$1 lines=() msg="" i
             [ -f "$file" ] || return 0
             mapfile -t lines < "$file"
-            for ((i=${#lines[@]}>70 ? ${#lines[@]}-70 : 0; i<${#lines[@]}; ++i)); do
-              msg+="${lines[i]//%/%25}%0A"
+            for ((i=${#lines[@]}>40 ? ${#lines[@]}-40 : 0; i<${#lines[@]}; ++i)); do
+              local line=${lines[i]//$'\r'/}
+              line=${line//%/%25}
+              msg+="${line:0:300}%0A"
             done
-            echo "::error title=$file::$msg"
+            echo "::error title=${file//\//_}::${msg}"
+            echo "== $file"; for ((i=${#lines[@]}>40 ? ${#lines[@]}-40 : 0; i<${#lines[@]}; ++i)); do echo "${lines[i]}"; done
           }
           if ! bash packaging/package.sh "motion-rig-${GITHUB_SHA::7}" > package.log 2>&1; then
             report package.log
