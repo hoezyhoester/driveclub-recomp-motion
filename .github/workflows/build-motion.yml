@@ -28,7 +28,7 @@ jobs:
         with:
           msystem: CLANG64
           update: true
-          install: git zip
+          install: base-devel git zip grep sed gawk coreutils findutils
           pacboy: >-
             toolchain:p clang:p cmake:p ninja:p pkgconf:p vulkan-headers:p vulkan-loader:p
             vulkan-memory-allocator:p fmt:p boost:p robin-map:p xxhash:p sdl3:p zydis:p ffmpeg:p
