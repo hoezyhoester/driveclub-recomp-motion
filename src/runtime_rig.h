@@ -13,6 +13,8 @@ void runtime_rig_no_car(void);
  * angular velocity in the world. */
 void runtime_rig_camera_target(const void *target);
 
+/* The in-game display (HUD) updated for this car (its subject): where the rev counter and gear come from. */
+void runtime_rig_hud_subject(const void *subject);
 /* From scePadInit: reads the settings and starts the idle packets. */
 void runtime_rig_start(void);
 /* A motion line of default.ini (motion, motion_host, motion_port). */

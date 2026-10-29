@@ -7,6 +7,7 @@ static int camera_pose_read(uintptr_t address,void *out,size_t size) {
     return address>=0x10000 && ReadProcessMemory(GetCurrentProcess(),(void *)address,out,size,&got) && got==size;
 }
 static void *camera_rate_hook(size_t,const unsigned char *,size_t,uintptr_t);
+#include "runtime_rig.h"
 #include "runtime_camera_rate.inc"
 #include "runtime_camera_motion.inc"
 #include "runtime_replay_recorded_motion.inc"

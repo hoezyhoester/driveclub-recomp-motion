@@ -356,6 +356,11 @@ static void *rig_idle_thread(void *arg) {
     }
     return NULL;
 }
+/* The in-game display's update (runtime_rig_camera.inc): the car whose rev counter and gear it shows. */
+void runtime_rig_hud_subject(const void *subject) {
+    if (subject) rig_hud_subject_at=(uintptr_t)subject;
+}
+
 /* From scePadInit: the settings are read, and the idle packets start. */
 void runtime_rig_start(void) {
     pthread_mutex_lock(&rig_m);

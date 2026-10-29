@@ -218,7 +218,7 @@ typedef struct {
 } ScanObject;
 
 static struct {
-    uintptr_t vehicle, state;    /* what was scanned: a new car starts again */
+    uintptr_t vehicle, state, hud;   /* what was scanned: a new car starts again */
     ScanObject *obj; int n_obj;
     unsigned samples, hist_pos; float drive_s;
     float speed_hist[SCAN_HISTORY];
@@ -252,28 +252,39 @@ static bool scan_known(uintptr_t vehicle) {
     return true;
 }
 
-static void scan_reset(uintptr_t vehicle, uintptr_t state) {
+/* The in-game display's car (its rev counter and gear come from it), from the display's update (runtime_rig.c). */
+static volatile uintptr_t rig_hud_subject_at;
+
+static void scan_reset(uintptr_t vehicle, uintptr_t state, uintptr_t hud) {
     if (!scan.obj) scan.obj=calloc(SCAN_OBJECTS,sizeof(ScanObject));
     if (!scan.obj) return;
     memset(scan.obj,0,SCAN_OBJECTS*sizeof(ScanObject));
-    scan.vehicle=vehicle; scan.state=state; scan.n_obj=0; scan.samples=0; scan.hist_pos=0; scan.t=0;
+    scan.vehicle=vehicle; scan.state=state; scan.hud=hud; scan.n_obj=0; scan.samples=0; scan.hist_pos=0; scan.t=0;
     scan.reports=0; scan.next_report=30.0f;
     { const char *e=getenv("BB_MOTION_SCAN_FIRST"); if (e && atof(e)>0) scan.next_report=(float)atof(e); }   /* tests */
-    scan.rpm_at=0; scan.gear_at=0; scan.rpm_max_seen=0;
-    /* the objects: the car, its state, and what the car (its first 0x400 bytes) and the state (0x100) point to */
-    const uintptr_t roots[2]={vehicle,state}; const char *names[2]={"vehicle","state"};
-    for (int r=0;r<2 && scan.n_obj<SCAN_OBJECTS;++r) {
+    scan.rpm_at=0; scan.gear_at=0; scan.rpm_max_seen=0; scan.known=false;
+    /* the objects, the display's first: its car and that car's +0x10 (the data the display reads), then the car
+     * found from the camera and its state, and what each of them points to */
+    uint64_t hud_data=0;
+    if (hud) rig_read(hud+0x10,&hud_data,8);
+    if (!rig_pointer(hud_data)) hud_data=0;
+    const uintptr_t roots[5]={(uintptr_t)hud_data,hud,vehicle,state,0};
+    const char *names[4]={"display data","display car","vehicle","state"};
+    const int spans[4]={0x400,0x400,0x1000,0x100};
+    for (int r=0;r<4 && scan.n_obj<SCAN_OBJECTS;++r) {
         if (!roots[r]) continue;
+        bool dup=false; for (int m=0;m<scan.n_obj;++m) if (scan.obj[m].address==roots[r]) dup=true;
+        if (dup) continue;
         ScanObject *o=&scan.obj[scan.n_obj++]; o->address=roots[r]; snprintf(o->label,sizeof o->label,"%s",names[r]);
     }
-    for (int r=0;r<2;++r) {
+    for (int r=0;r<4;++r) {
         if (!roots[r]) continue;
-        uint64_t ptrs[0x1000/8]; const int n=r==0 ? 0x1000/8 : 0x100/8;
+        static uint64_t ptrs[0x1000/8]; const int n=spans[r]/8;
         if (!rig_read(roots[r],ptrs,n*8)) continue;
         for (int k=0;k<n && scan.n_obj<SCAN_OBJECTS;++k) {
-            if (!rig_pointer(ptrs[k]) || ptrs[k]==vehicle || ptrs[k]==state) continue;
+            if (!rig_pointer(ptrs[k])) continue;
             bool dup=false; for (int m=0;m<scan.n_obj;++m) if (scan.obj[m].address==ptrs[k]) dup=true;
-            uint8_t probe[SCAN_BYTES];
+            static uint8_t probe[SCAN_BYTES];
             if (dup || !rig_read(ptrs[k],probe,sizeof probe)) continue;
             ScanObject *o=&scan.obj[scan.n_obj++]; o->address=(uintptr_t)ptrs[k];
             snprintf(o->label,sizeof o->label,"%s+0x%x ->",names[r],k*8);
@@ -283,15 +294,17 @@ static void scan_reset(uintptr_t vehicle, uintptr_t state) {
         scan.obj[m].f[k].in_range=true; scan.obj[m].f[k].min=1e30f; scan.obj[m].f[k].max=-1e30f;
         scan.obj[m].i[k].ok=true; scan.obj[m].i[k].lo=32767; scan.obj[m].i[k].hi=-32768;
     }
-    scan.known=scan_known(vehicle);
-    if (!scan.known)
-        printf("Rig: looking for the engine's RPM and gear in %d objects of the car; drive a few minutes with gear changes\n",scan.n_obj);
+    printf("Rig: looking for the engine's RPM and gear in %d objects (%s the in-game display's car); drive a few minutes with gear changes\n",
+           scan.n_obj,hud ? "with" : "without");
 }
 
-/* a field's value as RPM: rpm itself (300..16000) or rad/s (30..1700) */
+/* a field's value as RPM: rpm itself (300..16000), rad/s (30..1700), thousands, or a share of the dial */
 static bool scan_rpm_range(float lo, float hi, float *scale) {
     if (lo>=300.0f && hi<=16000.0f && hi-lo>=1500.0f) { *scale=1.0f; return true; }
     if (lo>=30.0f && hi<=1700.0f && hi-lo>=150.0f) { *scale=60.0f/(2.0f*3.14159265f); return true; }
+    /* a rev counter's own: thousands of rpm, or the needle's share of the dial (as 8000 rpm full scale) */
+    if (lo>=0.3f && hi<=12.0f && hi-lo>=1.5f) { *scale=1000.0f; return true; }
+    if (lo>=0.0f && hi<=1.2f && hi-lo>=0.3f) { *scale=8000.0f; return true; }
     return false;
 }
 
@@ -310,9 +323,9 @@ static void scan_report(bool final) {
     for (int m=0;m<scan.n_obj;++m) for (int k=0;k<SCAN_FIELDS;++k) {
         const ScanFloat *f=&scan.obj[m].f[k]; float scale;
         if (!f->in_range || f->drops<3 || !scan_rpm_range(f->min,f->max,&scale)) continue;
-        bool dup=false;   /* a copy of one already listed: the same values in the same object */
+        bool dup=false;   /* a copy of one already listed: the same values (the same object, or a copy of it) */
         for (int x=0;x<n_rpm;++x) { const ScanFloat *o2=&scan.obj[rpm[x].o].f[rpm[x].k];
-            if (rpm[x].o==m && o2->min==f->min && o2->max==f->max && o2->drops==f->drops) dup=true; }
+            if (o2->min==f->min && o2->max==f->max && o2->drops==f->drops) dup=true; }
         if (dup) continue;
         Cand c={m,k,f->drops,scale,0};
         int at=n_rpm<6 ? n_rpm++ : 5;
@@ -336,8 +349,8 @@ static void scan_report(bool final) {
     printf("Rig: after %.0f s of driving, %d RPM and %d gear candidates%s\n",scan.t,n_rpm,n_gear,final ? " (final)" : "");
     for (int r=0;r<n_rpm;++r) {
         const ScanObject *o=&scan.obj[rpm[r].o]; const ScanFloat *f=&o->f[rpm[r].k];
-        printf("Rig: RPM candidate %d: %s +0x%x, %.0f..%.0f%s, %u drops\n",r+1,o->label,rpm[r].k*4,f->min,f->max,
-               rpm[r].scale==1.0f ? " rpm" : " rad/s",(unsigned)f->drops);
+        printf("Rig: RPM candidate %d: %s +0x%x, %.3g..%.3g%s, %u drops\n",r+1,o->label,rpm[r].k*4,f->min,f->max,
+               rpm[r].scale==1.0f ? " rpm" : rpm[r].scale==1000.0f ? " (thousands)" : rpm[r].scale==8000.0f ? " (share of the dial)" : " rad/s",(unsigned)f->drops);
     }
     for (int r=0;r<n_gear;++r) {
         const ScanObject *o=&scan.obj[gear[r].o]; const ScanInt *g=&o->i[gear[r].k];
@@ -362,25 +375,34 @@ static void scan_report(bool final) {
 /* For finding the engine's fields by eye: every two seconds for the first two minutes of a car, the speed, the
  * throttle and the object at the car's +0x540, around where its engine speed and gear were found, to the log. */
 static void scan_check(uintptr_t vehicle, float speed, float throttle, float dt) {
-    static uintptr_t last_vehicle;
-    if (vehicle!=last_vehicle) { last_vehicle=vehicle; scan.check_s=0; scan.check_next=0; }
+    static uintptr_t last;
+    const uintptr_t hud=rig_hud_subject_at;
+    if (hud!=last) { last=hud; scan.check_s=0; scan.check_next=0; }
+    (void)vehicle;
     scan.check_s+=dt;
     if (scan.check_s>120.0f || scan.check_s<scan.check_next) return;
     scan.check_next=scan.check_s+2.0f;
-    uint64_t p=0; float f[32]; int32_t g[8];
-    if (!rig_read(vehicle+0x540,&p,8) || !rig_pointer(p) || !rig_read(p+0x180,f,sizeof f) || !rig_read(p+0x88,g,sizeof g)) {
-        printf("Rig: engine check: the object at the car's +0x540 does not read\n"); return;
+    uint64_t p=0; static float f[0x200/4];
+    if (!hud) { printf("Rig: engine check: the in-game display's car is not known (no display update seen)\n"); return; }
+    if (!rig_read(hud+0x10,&p,8) || !rig_pointer(p) || !rig_read(p,f,sizeof f)) {
+        printf("Rig: engine check: the display's car data does not read\n"); return;
     }
-    char line[512]; int n=snprintf(line,sizeof line,"Rig: engine check %.0fs %3.0f km/h thr %.2f | +0x88.. int",scan.check_s,speed*3.6f,throttle);
-    for (int i=0;i<8 && n<(int)sizeof line;++i) n+=snprintf(line+n,sizeof line-n," %d",(int)g[i]);
-    n+=snprintf(line+n,sizeof line-n," | +0x180.. float");
-    for (int i=0;i<32 && n<(int)sizeof line;++i) n+=snprintf(line+n,sizeof line-n," %.0f",isfinite(f[i]) && fabsf(f[i])<1e6f ? f[i] : -1.0f);
+    static char line[4096];
+    int n=snprintf(line,sizeof line,"Rig: engine check %.0fs %3.0f km/h thr %.2f | display data floats",scan.check_s,speed*3.6f,throttle);
+    for (int i=0;i<(int)(sizeof f/4) && n<(int)sizeof line-16;++i)
+        n+=snprintf(line+n,sizeof line-n," %.4g",isfinite(f[i]) && fabsf(f[i])<1e7f ? f[i] : -1.0f);
+    printf("%s\n",line);
+    n=snprintf(line,sizeof line,"Rig: engine check %.0fs small ints",scan.check_s);
+    const int32_t *iv=(const int32_t *)f;
+    for (int i=0;i<(int)(sizeof f/4) && n<(int)sizeof line-24;++i)
+        if (iv[i]>=-1 && iv[i]<=12) n+=snprintf(line+n,sizeof line-n," +0x%x=%d",i*4,(int)iv[i]);
     printf("%s\n",line);
 }
 
 /* One sample (the idle thread, 20 times a second) while the car is driven. */
 static void scan_sample(uintptr_t vehicle, uintptr_t state, float speed, float throttle, float dt) {
-    if (vehicle!=scan.vehicle || state!=scan.state) scan_reset(vehicle,state);
+    const uintptr_t hud=rig_hud_subject_at;
+    if (vehicle!=scan.vehicle || state!=scan.state || hud!=scan.hud) scan_reset(vehicle,state,hud);
     if (!scan.obj || !scan.n_obj) return;
     scan_check(vehicle,speed,throttle,dt);
     if (scan.known) {   /* still there? (a stale pointer reads nothing, or nonsense) */

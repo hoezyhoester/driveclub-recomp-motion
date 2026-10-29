@@ -161,6 +161,7 @@ static ReplayHudUpdate replay_hud_update_original;
 static ABI void replay_hud_update(void *self,void *subject,float dt) {
     ReplayHudObservation saved=replay_hud_observation;
     replay_hud_observation.dt=dt;replay_hud_observation.prepared=0;
+    runtime_rig_hud_subject(subject);   /* the motion rig's rev counter and gear (runtime_rig.c) */
     replay_hud_update_original(self,subject,dt);
     replay_hud_observation=saved;
 }
