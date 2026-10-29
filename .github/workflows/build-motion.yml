@@ -51,8 +51,9 @@ jobs:
             echo "::error title=${file//\//_}::${msg}"
             echo "== $file"; for ((i=${#lines[@]}>40 ? ${#lines[@]}-40 : 0; i<${#lines[@]}; ++i)); do echo "${lines[i]}"; done
           }
+          # The version is past the official 0.3.2 so the launcher's updater does not replace this build with it.
           { echo "PATH=$PATH"; echo "MSYSTEM=$MSYSTEM"; command -v bash clang cmake ninja pkg-config python windres ldd strip zip; pwd; ls; } > package.log 2>&1
-          if ! bash -x packaging/package.sh "motion-rig-${GITHUB_SHA::7}" >> package.log 2>&1; then
+          if ! bash -x packaging/package.sh "0.3.2.1-motion-${GITHUB_SHA::7}" >> package.log 2>&1; then
             report package.log
             report out/gpu-build.log
             # the logs on the ci-logs branch, to read without the Actions website

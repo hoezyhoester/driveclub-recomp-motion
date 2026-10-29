@@ -13,6 +13,8 @@ void runtime_rig_no_car(void);
  * angular velocity in the world. */
 void runtime_rig_camera_target(const void *target);
 
+/* From scePadInit: reads the settings and starts the idle packets. */
+void runtime_rig_start(void);
 /* A motion line of default.ini (motion, motion_host, motion_port). */
 void runtime_rig_config(const char *key, const char *value);
 

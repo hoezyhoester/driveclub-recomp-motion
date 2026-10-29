@@ -630,6 +630,8 @@ static ABI int32_t pad_init(void) {
 #ifdef _WIN32
     ffb_hook_install();   /* the car's simulation for the motion rig too, wheel or not (it is idempotent) */
 #endif
+    pthread_mutex_lock(&lock); input_load(); pthread_mutex_unlock(&lock);   /* the motion_* settings */
+    runtime_rig_start();
     return 0;
 }
 /* Opens are keyed like shadPS4's (user, type, index): the same key twice while open is "already opened", any other

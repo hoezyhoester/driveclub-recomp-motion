@@ -1,7 +1,10 @@
 /* Motion rig telemetry: the player's car as UDP packets for a motion simulator, through SpaceMonkey (its DriveClub
  * provider), which hands them on in Codemasters' custom UDP format to Sim Racing Studio, SimTools, FlyPT Mover...
  *
- * Where it comes from - the game's own simulation, not the camera:
+ * Where it comes from - the game's own simulation, not the camera. The game passes its physics steps only to the
+ * force feedback of a Logitech-type wheel; without a wheel, the car's world velocity and angular velocity (the
+ * camera's vehicle target, below) give the same, by their change: no per-wheel suspension then (flag 8 off).
+ * With a wheel:
  *   - Every physics step the force feedback inputs hook (runtime_pad.c) has the player's car state. Per wheel, in
  *     the game's order right front, left front, right rear, left rear (the car's x axis points left): +0xa50 load,
  *     +0xa60 lateral force, +0xa70 longitudinal force, in N. The block the game passed on: +0x18 speed (m/s).
@@ -23,6 +26,7 @@
  *   motion = on|off            on by default (BB_MOTION=0 turns it off)
  *   motion_host = 127.0.0.1    the PC SpaceMonkey runs on (BB_MOTION_HOST)
  *   motion_port = 20790        (BB_MOTION_PORT)
+ *   motion_flip_vertical = off on when heave and slope come out upside down (BB_MOTION_FLIP_VERTICAL)
  *
  * The packet (SpaceMonkey's BurnoutRevengeAPI.cs reads it), little-endian, 192 bytes:
  *    0 char[4] "XRTM"      4 u16 version 2       6 u16 flags: 1 in a race, 2 inputs, 4 dynamics, 8 suspension
@@ -66,7 +70,7 @@ static float rig_clamp(float v, float lo, float hi) { return v<lo ? lo : v>hi ? 
 static bool rig_finite3(const float *v) { return isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]); }
 
 /* ---- settings -------------------------------------------------------------------------------------------------- */
-static struct { bool enabled; char host[64]; int port; bool decided; } rig_cfg={true,"127.0.0.1",20790,false};
+static struct { bool enabled; char host[64]; int port; bool decided; bool flip_up; } rig_cfg={true,"127.0.0.1",20790,false,false};
 static pthread_mutex_t rig_m=PTHREAD_MUTEX_INITIALIZER;
 
 static bool rig_on(const char *v) { return strcmp(v,"0") && strcmp(v,"off") && strcmp(v,"false") && strcmp(v,"no"); }
@@ -77,6 +81,7 @@ void runtime_rig_config(const char *key, const char *value) {
     if (!strcmp(key,"motion")) rig_cfg.enabled=rig_on(value);
     else if (!strcmp(key,"motion_host")) snprintf(rig_cfg.host,sizeof rig_cfg.host,"%s",value);
     else if (!strcmp(key,"motion_port")) { const int p=atoi(value); if (p>0 && p<65536) rig_cfg.port=p; }
+    else if (!strcmp(key,"motion_flip_vertical")) rig_cfg.flip_up=rig_on(value);
     pthread_mutex_unlock(&rig_m);
 }
 static void rig_decide(void) {
@@ -86,6 +91,7 @@ static void rig_decide(void) {
     if ((e=getenv("BB_MOTION")) && *e) rig_cfg.enabled=rig_on(e);
     if ((e=getenv("BB_MOTION_HOST")) && *e) snprintf(rig_cfg.host,sizeof rig_cfg.host,"%s",e);
     if ((e=getenv("BB_MOTION_PORT")) && *e) { const int p=atoi(e); if (p>0 && p<65536) rig_cfg.port=p; }
+    if ((e=getenv("BB_MOTION_FLIP_VERTICAL")) && *e) rig_cfg.flip_up=rig_on(e);
     if (rig_cfg.enabled) printf("Rig: motion telemetry to %s:%d\n",rig_cfg.host,rig_cfg.port);
     else printf("Rig: motion telemetry off\n");
 }
@@ -134,7 +140,21 @@ static struct {
     const void *target; uint64_t us;
     float lin[3], ang[3], acc[3];   /* world velocity, angular velocity, and the change of velocity (m/s^2) */
     bool has_acc;
+    float dt;                       /* the time the last change of velocity was over */
+    unsigned hits, last_hits; uint64_t hits_since;   /* updates in the last second: the camera's own car has most */
 } rig_targets[RIG_TARGETS];
+/* What the player presses, read before rig_m is taken: the pad code holds its own lock while it reads the motion
+ * settings (runtime_rig_config), so the two are never taken the other way round. */
+typedef struct { bool inputs, steered; float throttle, brake, clutch, steering; } RigInputs;
+static RigInputs rig_inputs(void) {
+    RigInputs in={false,false,-1,-1,-1,0};
+    in.inputs=runtime_pad_pedals(&in.throttle,&in.brake,&in.clutch)>0;
+    in.steered=runtime_pad_steering(&in.steering)>0;
+    if (!in.steered) in.steering=0.0f;
+    return in;
+}
+static void rig_camera_step(int slot, uint64_t now, const RigInputs *in);
+static void rig_decide(void);
 
 void runtime_rig_camera_target(const void *target) {
     if (!target || !rig_cfg.enabled) return;
@@ -143,21 +163,36 @@ void runtime_rig_camera_target(const void *target) {
     memcpy(ang,(const char *)target+0x130,12);
     if (!rig_finite3(lin) || !rig_finite3(ang) || fabsf(lin[0])+fabsf(lin[1])+fabsf(lin[2])>500.0f) return;
     const uint64_t now=rig_now_us();
+    const RigInputs in=rig_inputs();
     pthread_mutex_lock(&rig_m);
     int slot=-1, oldest=0;
     for (int i=0;i<RIG_TARGETS;++i) {
         if (rig_targets[i].target==target) { slot=i; break; }
         if (rig_targets[i].us<rig_targets[oldest].us) oldest=i;
     }
-    if (slot<0) { slot=oldest; memset(&rig_targets[slot],0,sizeof rig_targets[slot]); rig_targets[slot].target=target; }
+    if (slot<0) { slot=oldest; memset(&rig_targets[slot],0,sizeof rig_targets[slot]); rig_targets[slot].target=target; rig_targets[slot].hits_since=now; }
+    if (now-rig_targets[slot].hits_since>=1000000) {
+        rig_targets[slot].last_hits=rig_targets[slot].hits; rig_targets[slot].hits=0; rig_targets[slot].hits_since=now;
+    }
+    ++rig_targets[slot].hits;
     const float dt=rig_targets[slot].us ? (float)(now-rig_targets[slot].us)*1e-6f : 0.0f;
-    if (dt>0.002f && dt<0.1f) {
-        for (int k=0;k<3;++k) rig_targets[slot].acc[k]=(lin[k]-rig_targets[slot].lin[k])/dt;
-        rig_targets[slot].has_acc=true;
-    } else if (dt>=0.1f) rig_targets[slot].has_acc=false;
-    if (dt==0.0f || dt>0.002f) {   /* the same frame twice: keep the first */
+    /* The physics steps at its own rate and the camera at the frame rate: the same velocity on two frames is one
+     * sample, and the change of velocity is over the time since it last changed (a still car: every 0.1 s). */
+    const bool same=!memcmp(lin,rig_targets[slot].lin,12) && !memcmp(ang,rig_targets[slot].ang,12);
+    bool fresh=false;
+    if (dt==0.0f) fresh=true;
+    else if (dt>0.002f && (!same || dt>=0.1f)) {
+        if (dt<0.25f) {
+            for (int k=0;k<3;++k) rig_targets[slot].acc[k]=(lin[k]-rig_targets[slot].lin[k])/dt;
+            rig_targets[slot].has_acc=true; rig_targets[slot].dt=dt;
+        } else rig_targets[slot].has_acc=false;
+        fresh=true;
+    }
+    if (fresh) {
         memcpy(rig_targets[slot].lin,lin,12); memcpy(rig_targets[slot].ang,ang,12);
         rig_targets[slot].us=now;
+        rig_decide();
+        rig_camera_step(slot,now,&in);
     }
     pthread_mutex_unlock(&rig_m);
 }
@@ -180,7 +215,22 @@ static struct {
     double slope_sum, resid_sum, slope_resid_sum, slope_sq_sum; int slope_samples; float up_sign;
     float impact;             /* decaying, g */
     uint64_t report_us;
+    uint64_t sent_us;         /* the last packet of a car, for the idle thread */
 } rig={.up_axis=-1,.yaw_sign=1.0f,.up_sign=1.0f,.lon_sign=1.0f};
+
+/* Without the physics steps (no steering wheel: the game only passes its physics to the Logitech force feedback),
+ * the car's motion from the camera's vehicle target: its world velocity and angular velocity. */
+static struct {
+    int lead;                 /* the target that is the player's car */
+    uint64_t us, report_us;
+    float f[3];               /* the way the car goes, flat */
+    float a[3];               /* the change of velocity, smoothed (m/s^2) */
+    float yaw, pitch, impact;
+    int up_axis; double axis_sum[3]; int axis_samples;
+    double right_cov; int right_samples; float right_sign;   /* which side is right: the way the player steers */
+    double yaw_cov; int yaw_samples; float yaw_sign;
+    bool told;
+} cam={.lead=-1,.f={0,0,1},.up_axis=-1,.right_sign=1.0f,.yaw_sign=1.0f};
 
 static void rig_put_f(uint8_t *p, size_t at, float v) { memcpy(p+at,&v,4); }
 static void rig_put_d(uint8_t *p, size_t at, double v) { memcpy(p+at,&v,8); }
@@ -193,21 +243,52 @@ static void rig_header(uint8_t *p, uint16_t flags, double t) {
     rig_put_d(p,16,t);
 }
 
+/* Ten times a second: when no car has been sent for a quarter of a second (menus, loading, pause), "not in a
+ * race", so the motion software eases the rig to rest. */
+static void rig_send_idle(uint64_t now) {
+    if (now-rig.idle_us<100000) return;
+    rig.idle_us=now;
+    uint8_t p[RIG_PACKET]={0};
+    rig_header(p,0,(double)now*1e-6);
+    rig_put_d(p,48+16,1.0); rig_put_d(p,72+8,1.0);   /* forward z, up y */
+    for (size_t at=100;at<=116;at+=4) rig_put_f(p,at,-1.0f);
+    rig_send(p,sizeof p);
+}
+static void *rig_idle_thread(void *arg) {
+    (void)arg;
+    for (;;) {
+        struct timespec t={0,100000000L}; nanosleep(&t,NULL);
+        pthread_mutex_lock(&rig_m);
+        const uint64_t now=rig_now_us();
+        if (now-rig.sent_us>250000) {
+            if (cam.lead>=0 && cam.told) { printf("Rig: no car moving; the rig rests\n"); cam.told=false; }
+            rig_send_idle(now);
+        }
+        pthread_mutex_unlock(&rig_m);
+    }
+    return NULL;
+}
+/* From scePadInit: the settings are read, and the idle packets start. */
+void runtime_rig_start(void) {
+    pthread_mutex_lock(&rig_m);
+    rig_decide();
+    static bool started;
+    if (rig_cfg.enabled && !started) {
+        started=true;
+        pthread_t t;
+        if (pthread_create(&t,NULL,rig_idle_thread,NULL)==0) pthread_detach(t);
+    }
+    pthread_mutex_unlock(&rig_m);
+}
+
 void runtime_rig_no_car(void) {
     pthread_mutex_lock(&rig_m);
     rig_decide();
     if (rig_cfg.enabled) {
         const uint64_t now=rig_now_us();
         if (rig.car) { rig.car=false; printf("Rig: no car under the player's control\n"); }
-        /* "not in a race", ten times a second: the motion software eases the rig to rest */
-        if (now-rig.idle_us>=100000) {
-            rig.idle_us=now;
-            uint8_t p[RIG_PACKET]={0};
-            rig_header(p,0,(double)now*1e-6);
-            rig_put_d(p,48+16,1.0); rig_put_d(p,72+8,1.0);   /* forward z, up y */
-            for (size_t at=100;at<=116;at+=4) rig_put_f(p,at,-1.0f);
-            rig_send(p,sizeof p);
-        }
+        rig.us=0;
+        rig_send_idle(now);
     }
     pthread_mutex_unlock(&rig_m);
 }
@@ -225,6 +306,7 @@ static int rig_match(float speed, uint64_t now) {
 }
 
 void runtime_rig_physics_step(const float *st, const uint8_t *block) {
+    const RigInputs in=rig_inputs();
     pthread_mutex_lock(&rig_m);
     rig_decide();
     if (!rig_cfg.enabled || !st || !block) { pthread_mutex_unlock(&rig_m); return; }
@@ -353,9 +435,8 @@ void runtime_rig_physics_step(const float *st, const uint8_t *block) {
     }
 
     uint8_t p[RIG_PACKET]={0};
-    float throttle=-1, brake=-1, clutch=-1, steering=-1;
-    const bool inputs=runtime_pad_pedals(&throttle,&brake,&clutch)>0;
-    if (!runtime_pad_steering(&steering)) steering=0.0f;
+    const float throttle=in.throttle, brake=in.brake, clutch=in.clutch, steering=in.steering;
+    const bool inputs=in.inputs;
     rig_header(p,(uint16_t)(1|(inputs ? 2 : 0)|4|8),(double)now*1e-6);
     /* forward and up from the yaw and pitch, for display */
     const float cy=cosf(rig.yaw), sy=sinf(rig.yaw), cp=cosf(rig.pitch), sp=sinf(rig.pitch);
@@ -372,5 +453,114 @@ void runtime_rig_physics_step(const float *st, const uint8_t *block) {
     static const int order[4]={1,0,3,2};
     for (int i=0;i<4;++i) { rig_put_f(p,160+4*i,travel[order[i]]); rig_put_f(p,176+4*i,ratio[order[i]]); }
     rig_send(p,sizeof p);
+    rig.sent_us=now;
     pthread_mutex_unlock(&rig_m);
+}
+
+/* ---- without the physics: the camera's vehicle target ------------------------------------------------------ */
+static void rig_v_cross(const float *a, const float *b, float *o) {
+    o[0]=a[1]*b[2]-a[2]*b[1]; o[1]=a[2]*b[0]-a[0]*b[2]; o[2]=a[0]*b[1]-a[1]*b[0];
+}
+static float rig_v_dot(const float *a, const float *b) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+static float rig_v_len(const float *a) { return sqrtf(rig_v_dot(a,a)); }
+
+static void rig_camera_step(int slot, uint64_t now, const RigInputs *in) {
+    if (!rig_cfg.enabled) return;
+    /* the physics steps, when the game passes them (a Logitech wheel), are better */
+    if (rig.us && now-rig.us<250000) return;
+    /* the player's car: the target updated most often; another only once this one stops */
+    if (cam.lead!=slot) {
+        const bool lead_alive=cam.lead>=0 && rig_targets[cam.lead].target && now-rig_targets[cam.lead].us<250000;
+        if (lead_alive && rig_targets[slot].last_hits<=rig_targets[cam.lead].last_hits) return;
+        cam.lead=slot; cam.us=0;
+        printf("Rig: following the camera's car (target %p); without a Logitech wheel the motion comes from its velocity\n",
+               rig_targets[slot].target);
+    }
+    if (!cam.told) { cam.told=true; printf("Rig: motion from the car's velocity\n"); }
+    const float *v=rig_targets[slot].lin, *w=rig_targets[slot].ang;
+    const float speed=rig_v_len(v);
+    const float dt=cam.us ? fminf(0.1f,fmaxf(0.001f,(float)(now-cam.us)*1e-6f)) : 0.016f;
+    cam.us=now;
+
+    /* up: the axis the car hardly moves along (y until known) */
+    if (cam.up_axis<0 && speed>10.0f) {
+        for (int k=0;k<3;++k) cam.axis_sum[k]+=fabsf(v[k]);
+        if (++cam.axis_samples>=300) {
+            int a=0; for (int k=1;k<3;++k) if (cam.axis_sum[k]<cam.axis_sum[a]) a=k;
+            cam.up_axis=a;
+            printf("Rig: the world's up axis is %s%c\n",rig_cfg.flip_up ? "-" : "+","xyz"[a]);
+        }
+    }
+    const int ax=cam.up_axis>=0 ? cam.up_axis : 1;
+    float U[3]={0,0,0}; U[ax]=rig_cfg.flip_up ? -1.0f : 1.0f;
+
+    /* the way the car goes, flat; kept while it is (nearly) still */
+    float flat[3]={v[0],v[1],v[2]}; flat[ax]=0.0f;
+    const float flat_speed=rig_v_len(flat);
+    if (flat_speed>1.5f) for (int k=0;k<3;++k) cam.f[k]=flat[k]/flat_speed;
+    float R0[3]; rig_v_cross(cam.f,U,R0);
+
+    /* the change of velocity, smoothed; a jump past 60 g is the car put back on the track */
+    float raw[3]={0,0,0};
+    if (rig_targets[slot].has_acc) memcpy(raw,rig_targets[slot].acc,12);
+    const float raw_g=rig_v_len(raw)/RIG_G;
+    if (raw_g>60.0f) { memset(raw,0,12); memset(cam.a,0,12); }
+    const float k_a=fminf(1.0f,dt/0.05f);
+    for (int k=0;k<3;++k) cam.a[k]+=(raw[k]-cam.a[k])*k_a;
+    if (raw_g<60.0f && raw_g>3.0f && raw_g-3.0f>cam.impact) cam.impact=fminf(raw_g-3.0f,3.0f);
+    cam.impact*=expf(-dt/0.15f);
+
+    /* which side is right: a car steered right is pushed right */
+    const float steering=in->steering;
+    const bool steered=in->steered;
+    const float side=rig_v_dot(cam.a,R0);
+    if (steered && speed>8.0f && fabsf(steering)>0.25f && fabsf(side)>2.0f && cam.right_samples<2000) {
+        cam.right_cov+=(double)steering*side;
+        if (++cam.right_samples==150 || cam.right_samples==2000) {
+            const float s=cam.right_cov<0.0 ? -1.0f : 1.0f;
+            if (s!=cam.right_sign || cam.right_samples==150) printf("Rig: right is %s the world's (from the steering)\n",s>0 ? "as" : "against");
+            cam.right_sign=s;
+        }
+    }
+    float R[3]; for (int k=0;k<3;++k) R[k]=R0[k]*cam.right_sign;
+    const float right=rig_v_dot(cam.a,R), up=rig_v_dot(cam.a,U), fwd=rig_v_dot(cam.a,cam.f);
+
+    /* the yaw rate, + turning right: with the steering, as the side */
+    const float w_up=rig_v_dot(w,U);
+    if (steered && speed>8.0f && fabsf(steering)>0.25f && fabsf(w_up)>0.05f && cam.yaw_samples<2000) {
+        cam.yaw_cov+=(double)w_up*steering;
+        if (++cam.yaw_samples==150 || cam.yaw_samples==2000) cam.yaw_sign=cam.yaw_cov<0.0 ? -1.0f : 1.0f;
+    }
+    const float yaw_rate=cam.yaw_sign*w_up;
+    cam.yaw+=yaw_rate*dt;
+    if (cam.yaw>RIG_PI) cam.yaw-=2.0f*RIG_PI;
+    if (cam.yaw<-RIG_PI) cam.yaw+=2.0f*RIG_PI;
+
+    /* the slope along the way it goes */
+    const float slope=flat_speed>5.0f ? atanf(rig_clamp(rig_v_dot(v,U)/flat_speed,-0.6f,0.6f)) : 0.0f;
+    cam.pitch+=(slope-cam.pitch)*fminf(1.0f,dt/0.15f);
+
+    if (now-cam.report_us>30000000) {
+        cam.report_us=now;
+        printf("Rig: %.0f km/h, sway %.2f g, heave %.2f g, surge %.2f g, yaw rate %.2f, pitch %.1f deg (from the velocity)\n",
+               speed*3.6f,right/RIG_G,up/RIG_G,fwd/RIG_G,yaw_rate,cam.pitch*57.3f);
+    }
+
+    uint8_t p[RIG_PACKET]={0};
+    const float throttle=in->throttle, brake=in->brake, clutch=in->clutch;
+    const bool inputs=in->inputs;
+    rig_header(p,(uint16_t)(1|(inputs ? 2 : 0)|4),(double)now*1e-6);
+    const float cy=cosf(cam.yaw), sy=sinf(cam.yaw), cp=cosf(cam.pitch), sp=sinf(cam.pitch);
+    rig_put_d(p,48,sy*cp); rig_put_d(p,56,sp); rig_put_d(p,64,cy*cp);
+    rig_put_d(p,72,-sy*sp); rig_put_d(p,80,cp); rig_put_d(p,88,-cy*sp);
+    rig_put_f(p,96,speed);
+    rig_put_f(p,100,inputs ? throttle : -1.0f); rig_put_f(p,104,inputs ? brake : -1.0f);
+    rig_put_f(p,108,steered ? steering : 0.0f); rig_put_f(p,112,-1.0f); rig_put_f(p,116,-1.0f);
+    rig_put_f(p,120,inputs ? clutch : -1.0f);
+    rig_put_f(p,128,right); rig_put_f(p,132,up); rig_put_f(p,136,fwd);
+    rig_put_f(p,140,yaw_rate); rig_put_f(p,144,cam.pitch); rig_put_f(p,148,0.0f); rig_put_f(p,152,cam.yaw);
+    rig_put_f(p,156,cam.impact);
+    for (int i=0;i<4;++i) rig_put_f(p,176+4*i,1.0f);
+    rig_send(p,sizeof p);
+    rig.sent_us=now;
 }

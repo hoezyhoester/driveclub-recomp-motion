@@ -15,13 +15,22 @@ In `data\user\input_config\default.ini`:
 motion = on              ; off to stop sending
 motion_host = 127.0.0.1  ; the PC SpaceMonkey runs on
 motion_port = 20790
+motion_flip_vertical = off  ; on if crests and dips (heave and slope) come out upside down
 ```
 
-For a test run the environment wins: `BB_MOTION=0`, `BB_MOTION_HOST`, `BB_MOTION_PORT`.
+For a test run the environment wins: `BB_MOTION=0`, `BB_MOTION_HOST`, `BB_MOTION_PORT`, `BB_MOTION_FLIP_VERTICAL`.
 
 ## What is sent, and where it comes from
 
-All from the game's own simulation of the car (`src/runtime_rig.c`), not from the camera:
+The game passes its physics steps only to the force feedback of a steering wheel. So there are two sources
+(`src/runtime_rig.c`):
+
+**Without a wheel** (a gamepad or keyboard): the car's own world velocity and angular velocity, which the game
+keeps for its chase camera. Their change gives the g-forces (sway, heave, surge), the yaw rate, the slope and
+impacts. No per-wheel suspension: SpaceMonkey works that out from the g-forces. Which way is right and which way the
+car turns are learnt from your steering in the first corners; the log says when.
+
+**With a wheel**, from the game's simulation of the car itself:
 
 | | From |
 |---|---|
