@@ -65,13 +65,22 @@ INSTELLINGEN (in DriveClub\data\user\input_config\default.ini)
   motion_flip_vertical = on     heuvels en dalen omdraaien
 
 
-MET OF ZONDER STUUR
--------------------
+DE BANDEN, TOERENTAL EN VERSNELLING
+-----------------------------------
 
-Met een stuur (dat de game als Logitech-stuur ziet) komen de krachten rechtstreeks uit de
-banden: ook hobbels en curbs per wiel. Met een controller komen ze uit de snelheid van de auto:
-de g-krachten, het draaien, de helling en crashes, maar geen vering per wiel (SpaceMonkey
-berekent die dan zelf).
+Met een stuur komen de krachten rechtstreeks uit de banden. Met een controller zoekt het spel
+de banden van je auto zelf op; in het log staat dan "Rig: motion from the car's tyres". Lukt dat
+niet, dan komen de krachten uit de snelheid van de auto (zonder vering per wiel).
+
+Het toerental (RPM) en de versnelling worden gezocht terwijl je rijdt: rij een paar minuten met
+flink optrekken en schakelen (automaat mag). Gevonden? Dan staat in SpaceMonkey bij "engine" een
+toerental en een versnelling, en in het log "Rig: using RPM from ...". Daarna werken ook
+toerental- en schakel-effecten op shakers zoals een ButtKicker.
+
+Wielspin en blokkerende wielen gaan per wiel mee (als de banden gevonden zijn), voor
+wheelspin- en ABS-effecten in Sim Racing Studio of SimHub.
+
+Stuur na een rit de regels met "Rig:" uit het log op als iets niet gevonden wordt.
 
 
 ALS HET NIET WERKT

@@ -25,10 +25,19 @@ For a test run the environment wins: `BB_MOTION=0`, `BB_MOTION_HOST`, `BB_MOTION
 The game passes its physics steps only to the force feedback of a steering wheel. So there are two sources
 (`src/runtime_rig.c`):
 
-**Without a wheel** (a gamepad or keyboard): the car's own world velocity and angular velocity, which the game
-keeps for its chase camera. Their change gives the g-forces (sway, heave, surge), the yaw rate, the slope and
-impacts. No per-wheel suspension: SpaceMonkey works that out from the g-forces. Which way is right and which way the
-car turns are learnt from your steering in the first corners; the log says when.
+**Without a wheel** (a gamepad or keyboard): the car's own object is looked for from the chase camera, which keeps
+a copy of its velocity, and from it the car's simulation state: the same tyres as with a wheel (`Rig: the car's
+object found ...`, `Rig: motion from the car's tyres`). Until it is found, or if it is not, the car's velocity and
+angular velocity give the g-forces, the yaw rate, the slope and impacts, with no per-wheel suspension. Which way is
+right and which way the car turns are learnt from your steering in the first corners; the log says when.
+
+**RPM and gear** are looked for while you drive: fields of the car that rise with its speed and drop at each
+upshift, and a small whole number that steps up at those drops. After 90 seconds of driving (and every two minutes
+after) the best candidates go to the log (`Rig: RPM candidate`, `Rig: gear candidate`); one that clearly stands out
+is used straight away (`Rig: using RPM from ...`). Drive with gear changes - the automatic gearbox is fine.
+
+**Tyre slip** (wheelspin, locking brakes) is sent per wheel whenever the tyres are; SpaceMonkey turns it into each
+wheel's speed, which shaker software (Sim Racing Studio, SimHub) uses for wheelspin and ABS effects.
 
 **With a wheel**, from the game's simulation of the car itself:
 
@@ -50,7 +59,7 @@ driving. The log says when, in lines starting `Rig:`, and every 30 seconds what 
 
 ## The packet
 
-Little-endian, 192 bytes ("XRTM" version 2; version 1 is Xerenge's Burnout Revenge packet, which SpaceMonkey reads
+Little-endian, 224 bytes ("XRTM" version 2; version 1 is Xerenge's Burnout Revenge packet, which SpaceMonkey reads
 too):
 
 | Offset | Type | |
@@ -75,3 +84,5 @@ too):
 | 156 | f32 | impact (g, 0..3) |
 | 160 | f32[4] | suspension travel front left, front right, rear left, rear right (mm, + compressed) |
 | 176 | f32[4] | each wheel's load over its average (1 at rest), same order |
+| 192 | f32[4] | slip ratio, same order (0 rolling, + spinning, - locking; flag 16) |
+| 208 | f32[4] | slip angle, same order (rad) |

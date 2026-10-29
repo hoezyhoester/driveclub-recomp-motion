@@ -38,6 +38,9 @@
  *  140 f32 yaw rate (rad/s, + turning right)   144 f32 pitch (rad, + nose up)   148 f32 roll (rad, 0: not known)
  *  152 f32 yaw (rad)      156 f32 impact (g, 0..3, fading over 0.15 s)
  *  160 f32[4] suspension travel FL FR RL RR (mm, + compressed)   176 f32[4] wheel load over its average (1 at rest)
+ *  192 f32[4] slip ratio FL FR RL RR (0 rolling, + spinning, - locking)   208 f32[4] slip angle (rad)   (flag 16)
+ * The tyres come from the physics steps with a wheel, or from the car's state found through the camera's target
+ * without one (runtime_rig_scan.inc); RPM and gear once that search has found them (-1 until then).
  */
 #ifdef _WIN32
 #include <winsock2.h>
@@ -57,7 +60,7 @@
 #include <time.h>
 #include "runtime_rig.h"
 
-#define RIG_PACKET 192
+#define RIG_PACKET 224
 #define RIG_G 9.81f
 #define RIG_TARGETS 8
 #define RIG_PI 3.14159265f
@@ -68,6 +71,12 @@ static uint64_t rig_now_us(void) {
 }
 static float rig_clamp(float v, float lo, float hi) { return v<lo ? lo : v>hi ? hi : v; }
 static bool rig_finite3(const float *v) { return isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]); }
+static void rig_v_cross(const float *a, const float *b, float *o) {
+    o[0]=a[1]*b[2]-a[2]*b[1]; o[1]=a[2]*b[0]-a[0]*b[2]; o[2]=a[0]*b[1]-a[1]*b[0];
+}
+static float rig_v_dot(const float *a, const float *b) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+static float rig_v_len(const float *a) { return sqrtf(rig_v_dot(a,a)); }
+#include "runtime_rig_scan.inc"
 
 /* ---- settings -------------------------------------------------------------------------------------------------- */
 static struct { bool enabled; char host[64]; int port; bool decided; bool flip_up; } rig_cfg={true,"127.0.0.1",20790,false,false};
@@ -221,6 +230,7 @@ static struct {
     float impact;             /* decaying, g */
     uint64_t report_us;
     uint64_t sent_us;         /* the last packet of a car, for the idle thread */
+    uint64_t ffb_us;          /* the last physics step from the force feedback hook (a wheel) */
 } rig={.up_axis=-1,.yaw_sign=1.0f,.up_sign=1.0f,.lon_sign=1.0f};
 
 /* Without the physics steps (no steering wheel: the game only passes its physics to the Logitech force feedback),
@@ -235,6 +245,9 @@ static struct {
     double right_cov; int right_samples; float right_sign;   /* which side is right: the way the player steers */
     double yaw_cov; int yaw_samples; float yaw_sign;
     bool told;
+    /* the car's own object and its simulation state, found from the target (the idle thread) */
+    uintptr_t target, vehicle, state; float target_lin[3]; uint64_t search_us; float throttle;
+    char vehicle_how[96], state_how[48]; int state_bad;
 } cam={.lead=-1,.f={0,0,1},.up_axis=-1,.right_sign=1.0f,.yaw_sign=1.0f};
 
 static void rig_put_f(uint8_t *p, size_t at, float v) { memcpy(p+at,&v,4); }
@@ -261,15 +274,43 @@ static void rig_send_idle(uint64_t now) {
 }
 static void *rig_idle_thread(void *arg) {
     (void)arg;
+    uint64_t last=rig_now_us();
     for (;;) {
-        struct timespec t={0,100000000L}; nanosleep(&t,NULL);
+        struct timespec t={0,50000000L}; nanosleep(&t,NULL);
         pthread_mutex_lock(&rig_m);
         const uint64_t now=rig_now_us();
         if (now-rig.sent_us>250000) {
             if (cam.lead>=0 && cam.told) { printf("Rig: no car moving; the rig rests\n"); cam.told=false; }
             rig_send_idle(now);
         }
+        /* what the search needs, copied out: it reads the game's memory without rig_m held */
+        const bool moving=now-rig.sent_us<250000;
+        const uintptr_t target=cam.target, vehicle=cam.vehicle, state=cam.state;
+        float lin[3]; memcpy(lin,cam.target_lin,12);
+        const float throttle=cam.throttle, speed=rig_v_len(lin);
+        const bool search=moving && !vehicle && target && speed>3.0f && now-cam.search_us>1000000;
+        if (search) cam.search_us=now;
         pthread_mutex_unlock(&rig_m);
+        const float dt=(float)(now-last)*1e-6f; last=now;
+
+        if (search) {
+            char how[96]="", state_how[48]="";
+            const uintptr_t v=rig_find_vehicle(target,lin,how,sizeof how);
+            const uintptr_t s=v ? rig_find_state(v,state_how,sizeof state_how) : 0;
+            static unsigned tries;
+            if (v || ++tries%30==1) {
+                if (v) printf("Rig: the car's object found (%s)%s%s\n",how,s ? "; its tyres at " : "; its tyres not found",s ? state_how : "");
+                else printf("Rig: the car's object not found from the camera yet\n");
+            }
+            if (v) {
+                pthread_mutex_lock(&rig_m);
+                cam.vehicle=v; cam.state=s; cam.told=false; cam.state_bad=0;
+                snprintf(cam.vehicle_how,sizeof cam.vehicle_how,"%s",how);
+                snprintf(cam.state_how,sizeof cam.state_how,"%s",state_how);
+                pthread_mutex_unlock(&rig_m);
+            }
+        }
+        if (moving && vehicle && dt>0.0f && dt<0.5f) scan_sample(vehicle,state,speed,throttle,dt);
     }
     return NULL;
 }
@@ -310,26 +351,34 @@ static int rig_match(float speed, uint64_t now) {
     return best>=0 && best_diff<fmaxf(2.0f,0.1f*speed) ? best : -1;
 }
 
+static void rig_physics_locked(const float *st, const uint8_t *block, const RigInputs *in_p, uint64_t now);
 void runtime_rig_physics_step(const float *st, const uint8_t *block) {
     const RigInputs in=rig_inputs();
     pthread_mutex_lock(&rig_m);
     rig_decide();
-    if (!rig_cfg.enabled || !st || !block) { pthread_mutex_unlock(&rig_m); return; }
-    const uint64_t now=rig_now_us();
+    if (rig_cfg.enabled && st && block) {
+        const uint64_t now=rig_now_us();
+        rig.ffb_us=now;
+        rig_physics_locked(st,block,&in,now);
+    }
+    pthread_mutex_unlock(&rig_m);
+}
+/* One step of the car from its simulation state st (the force feedback hook's, or the one found from the camera's
+ * target): under rig_m. */
+static void rig_physics_locked(const float *st, const uint8_t *block, const RigInputs *in_p, uint64_t now) {
+    const RigInputs in=*in_p;
     float speed; memcpy(&speed,block+0x18,4);
     const float *load=st+0xa50/4, *lat=st+0xa60/4, *lon=st+0xa70/4;
     float sum_load=0, sum_lat=0, sum_lon=0;
     for (int i=0;i<4;++i) {
-        if (!isfinite(load[i]) || !isfinite(lat[i]) || !isfinite(lon[i]) || fabsf(load[i])>1e6f) {
-            pthread_mutex_unlock(&rig_m); return;
-        }
+        if (!isfinite(load[i]) || !isfinite(lat[i]) || !isfinite(lon[i]) || fabsf(load[i])>1e6f) return;
         sum_load+=load[i]; sum_lat+=lat[i]; sum_lon+=lon[i];
     }
     if (!isfinite(speed)) speed=0.0f;
     if (!rig.car) {
         rig.car=true; rig.us=0; rig.surge=0; rig.impact=0; rig.yaw=0; rig.pitch=0;
         for (int i=0;i<4;++i) rig.wheel_avg[i]=load[i];
-        printf("Rig: the player's car (state %p), %.0f N on its tyres\n",(const void *)st,sum_load);
+        printf("Rig: the player's car%s, %.0f N on its tyres\n",rig.ffb_us==now ? " (from the wheel's force feedback)" : " (found from the camera)",sum_load);
     }
     float dt=rig.us ? (float)(now-rig.us)*1e-6f : 0.0f;
     const bool stepped=dt>0.0005f && dt<0.1f;
@@ -442,37 +491,38 @@ void runtime_rig_physics_step(const float *st, const uint8_t *block) {
     uint8_t p[RIG_PACKET]={0};
     const float throttle=in.throttle, brake=in.brake, clutch=in.clutch, steering=in.steering;
     const bool inputs=in.inputs;
-    rig_header(p,(uint16_t)(1|(inputs ? 2 : 0)|4|8),(double)now*1e-6);
+    rig_header(p,(uint16_t)(1|(inputs ? 2 : 0)|4|8|16),(double)now*1e-6);
     /* forward and up from the yaw and pitch, for display */
     const float cy=cosf(rig.yaw), sy=sinf(rig.yaw), cp=cosf(rig.pitch), sp=sinf(rig.pitch);
     rig_put_d(p,48,sy*cp); rig_put_d(p,56,sp); rig_put_d(p,64,cy*cp);
     rig_put_d(p,72,-sy*sp); rig_put_d(p,80,cp); rig_put_d(p,88,-cy*sp);
     rig_put_f(p,96,speed);
     rig_put_f(p,100,inputs ? throttle : -1.0f); rig_put_f(p,104,inputs ? brake : -1.0f);
-    rig_put_f(p,108,steering); rig_put_f(p,112,-1.0f); rig_put_f(p,116,-1.0f);
+    float rpm, gear; scan_live(&rpm,&gear);
+    rig_put_f(p,108,steering); rig_put_f(p,112,rpm); rig_put_f(p,116,gear);
     rig_put_f(p,120,inputs ? clutch : -1.0f);
     rig_put_f(p,128,right); rig_put_f(p,132,up); rig_put_f(p,136,rig.surge);
     rig_put_f(p,140,yaw_rate); rig_put_f(p,144,rig.pitch); rig_put_f(p,148,0.0f); rig_put_f(p,152,rig.yaw);
     rig_put_f(p,156,rig.impact);
     /* the game's right front, left front, right rear, left rear as front left, front right, rear left, rear right */
     static const int order[4]={1,0,3,2};
-    for (int i=0;i<4;++i) { rig_put_f(p,160+4*i,travel[order[i]]); rig_put_f(p,176+4*i,ratio[order[i]]); }
+    const float *slip_ratio=st+0xb30/4, *slip_angle=st+0xb50/4;
+    for (int i=0;i<4;++i) {
+        rig_put_f(p,160+4*i,travel[order[i]]); rig_put_f(p,176+4*i,ratio[order[i]]);
+        const float sr=slip_ratio[order[i]], sa=slip_angle[order[i]];
+        rig_put_f(p,192+4*i,isfinite(sr) ? rig_clamp(sr,-1.0f,5.0f) : 0.0f);
+        rig_put_f(p,208+4*i,isfinite(sa) ? rig_clamp(sa,-1.6f,1.6f) : 0.0f);
+    }
     rig_send(p,sizeof p);
     rig.sent_us=now;
-    pthread_mutex_unlock(&rig_m);
 }
 
 /* ---- without the physics: the camera's vehicle target ------------------------------------------------------ */
-static void rig_v_cross(const float *a, const float *b, float *o) {
-    o[0]=a[1]*b[2]-a[2]*b[1]; o[1]=a[2]*b[0]-a[0]*b[2]; o[2]=a[0]*b[1]-a[1]*b[0];
-}
-static float rig_v_dot(const float *a, const float *b) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
-static float rig_v_len(const float *a) { return sqrtf(rig_v_dot(a,a)); }
 
 static void rig_camera_step(int slot, uint64_t now, const RigInputs *in) {
     if (!rig_cfg.enabled) return;
     /* the physics steps, when the game passes them (a Logitech wheel), are better */
-    if (rig.us && now-rig.us<250000) return;
+    if (rig.ffb_us && now-rig.ffb_us<250000) return;
     /* the player's car: the target updated most often; another only once this one stops */
     if (cam.lead!=slot) {
         const bool lead_alive=cam.lead>=0 && rig_targets[cam.lead].target && now-rig_targets[cam.lead].us<250000;
@@ -481,9 +531,23 @@ static void rig_camera_step(int slot, uint64_t now, const RigInputs *in) {
         printf("Rig: following the camera's car (target %p); without a Logitech wheel the motion comes from its velocity\n",
                rig_targets[slot].target);
     }
-    if (!cam.told) { cam.told=true; printf("Rig: motion from the car's velocity\n"); }
     const float *v=rig_targets[slot].lin, *w=rig_targets[slot].ang;
     const float speed=rig_v_len(v);
+    /* for the idle thread's search */
+    cam.target=(uintptr_t)rig_targets[slot].target; memcpy(cam.target_lin,v,12); cam.throttle=in->inputs ? in->throttle : 0.0f;
+    /* the car's own state, once found: its tyres, as with a wheel */
+    if (cam.state) {
+        static float st[0xc00/4];
+        if (rig_read(cam.state,st,sizeof st) && rig_tyres_plausible(st)) {
+            cam.state_bad=0;
+            uint8_t block[0x30]={0}; memcpy(block+0x18,&speed,4);
+            if (!cam.told) { cam.told=true; printf("Rig: motion from the car's tyres (found without a wheel)\n"); }
+            rig_physics_locked(st,block,in,now);
+            return;
+        }
+        if (++cam.state_bad>30) { printf("Rig: the car's state no longer reads right; back to its velocity\n"); cam.state=0; cam.vehicle=0; cam.told=false; }
+    }
+    if (!cam.told) { cam.told=true; printf("Rig: motion from the car's velocity\n"); }
     const float dt=cam.us ? fminf(0.1f,fmaxf(0.001f,(float)(now-cam.us)*1e-6f)) : 0.016f;
     cam.us=now;
 
@@ -560,7 +624,8 @@ static void rig_camera_step(int slot, uint64_t now, const RigInputs *in) {
     rig_put_d(p,72,-sy*sp); rig_put_d(p,80,cp); rig_put_d(p,88,-cy*sp);
     rig_put_f(p,96,speed);
     rig_put_f(p,100,inputs ? throttle : -1.0f); rig_put_f(p,104,inputs ? brake : -1.0f);
-    rig_put_f(p,108,steered ? steering : 0.0f); rig_put_f(p,112,-1.0f); rig_put_f(p,116,-1.0f);
+    float rpm, gear; scan_live(&rpm,&gear);
+    rig_put_f(p,108,steered ? steering : 0.0f); rig_put_f(p,112,rpm); rig_put_f(p,116,gear);
     rig_put_f(p,120,inputs ? clutch : -1.0f);
     rig_put_f(p,128,right); rig_put_f(p,132,up); rig_put_f(p,136,fwd);
     rig_put_f(p,140,yaw_rate); rig_put_f(p,144,cam.pitch); rig_put_f(p,148,0.0f); rig_put_f(p,152,cam.yaw);
