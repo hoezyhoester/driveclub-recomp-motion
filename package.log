@@ -1,0 +1,112 @@
+PATH=/clang64/bin:/usr/local/bin:/usr/bin:/bin:/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem:/c/Windows/System32/WindowsPowerShell/v1.0/:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl
+MSYSTEM=CLANG64
+/usr/bin/bash
+/clang64/bin/clang
+/clang64/bin/cmake
+/clang64/bin/ninja
+/clang64/bin/pkg-config
+/clang64/bin/python
+/clang64/bin/windres
+/usr/bin/ldd
+/clang64/bin/strip
+/usr/bin/zip
+/d/a/driveclub-recomp-motion/driveclub-recomp-motion
+build.sh
+BUILDING.md
+docs
+gpu
+launcher
+LICENSE
+msys2-env.sh
+package.log
+packaging
+patches
+README.md
+src
+third_party
+tools
++ set -euo pipefail
+++ dirname packaging/package.sh
++ cd packaging/..
++ export PATH=/c/msys64/clang64/bin:/clang64/bin:/usr/local/bin:/usr/bin:/bin:/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem:/c/Windows/System32/WindowsPowerShell/v1.0/:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl
++ PATH=/c/msys64/clang64/bin:/clang64/bin:/usr/local/bin:/usr/bin:/bin:/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem:/c/Windows/System32/WindowsPowerShell/v1.0/:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl
++ VERSION=0.3.2.1-motion-e1592cb
++ NAME=driveclub-recomp-0.3.2.1-motion-e1592cb-win64
++ OUT=release/driveclub-recomp-0.3.2.1-motion-e1592cb-win64
++ bash build.sh
+CMake Warning (policy) at CMakeLists.txt:46 (find_package):
+  Policy CMP0167 is not set: The FindBoost module is removed.  Run "cmake
+  --help-policy CMP0167" for policy details.  Use the cmake_policy command to
+  set the policy and suppress this warning.
+This warning is for project developers.  Use -Wno-author or -Wno-policy to
+suppress it.
+
+CMake Warning (deprecated) at third_party/miniz/CMakeLists.txt:1 (cmake_minimum_required):
+  Compatibility with CMake < 3.10 will be removed from a future version of
+  CMake.
+
+  Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax
+  to tell CMake that the project requires at least <min> but has been updated
+  to work with policies introduced by <max> or earlier.
+This warning is for project developers.  Use -Wno-author or -Wno-deprecated
+to suppress it.
+
+CMake Warning (policy) at third_party/miniz/CMakeLists.txt:45 (option):
+  Policy CMP0077 is not set: option() honors normal variables.  Run "cmake
+  --help-policy CMP0077" for policy details.  Use the cmake_policy command to
+  set the policy and suppress this warning.
+
+  For compatibility with older versions of CMake, option is clearing the
+  normal variable 'BUILD_SHARED_LIBS'.
+This warning is for project developers.  Use -Wno-author or -Wno-policy to
+suppress it.
+
+CMake Warning (policy) at third_party/sirit/CMakeLists.txt:29 (set):
+  Policy CMP0218 is not set: The CMAKE_WARN_DEPRECATED and
+  CMAKE_ERROR_DEPRECATED variables are ignored.  Run "cmake --help-policy
+  CMP0218" for policy details.  Use the cmake_policy command to set the
+  policy and suppress this warning.
+This warning is for project developers.  Use -Wno-author or -Wno-policy to
+suppress it.
+
+D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/fsr-vulkan/src/ffx_vk_fsr3_3_1_6_framegen.cpp:141:79: warning: missing field 'pNext' initializer [-Wmissing-field-initializers]
+  141 |     VkMemoryAllocateInfo allocationInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      |                                                                               ^
+7 warnings generated.
+In file included from D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/fsr-vulkan/src/ffx_vk_fsr3_3_1_5_bridge.cpp:16:
+In file included from D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/fsr-vulkan/upstream/ffx-2.3.0/Kits/FidelityFX/api/internal/ffx_interface.h:25:
+In file included from D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/fsr-vulkan/upstream/ffx-2.3.0/Kits/FidelityFX/api/internal/ffx_assert.h:25:
+D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/fsr-vulkan/upstream/ffx-2.3.0/Kits/FidelityFX/api/internal/ffx_internal_types.h:163:9: warning: unknown pragma ignored [-Wunknown-pragmas]
+  163 | #pragma warning(disable : 4365 4710 4820 5039)
+      |         ^
+D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/fsr-vulkan/upstream/ffx-2.3.0/Kits/FidelityFX/api/internal/ffx_internal_types.h:658:76: warning: missing field 'size' initializer [-Wmissing-field-initializers]
+  658 |         FfxResourceInitData initData = { FFX_RESOURCE_INIT_DATA_TYPE_VALUE };
+      |                                                                            ^
+D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/fsr-vulkan/upstream/ffx-2.3.0/Kits/FidelityFX/api/internal/ffx_internal_types.h:666:77: warning: missing field 'size' initializer [-Wmissing-field-initializers]
+  666 |         FfxResourceInitData initData = { FFX_RESOURCE_INIT_DATA_TYPE_BUFFER };
+      |                                                                             ^
+D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/fsr-vulkan/upstream/ffx-2.3.0/Kits/FidelityFX/api/internal/ffx_internal_types.h:712:96: warning: suggest braces around initialization of subobject [-Wmissing-braces]
+  712 | static FfxViewDescription s_FfxViewDescInit = { false, FFX_RESOURCE_VIEW_DIMENSION_TEXTURE_2D, -1, -1, -1, L"" };
+      |                                                                                                ^~
+      |                                                                                                { }
+D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/fsr-vulkan/upstream/ffx-2.3.0/Kits/FidelityFX/api/internal/ffx_internal_types.h:712:100: warning: suggest braces around initialization of subobject [-Wmissing-braces]
+  712 | static FfxViewDescription s_FfxViewDescInit = { false, FFX_RESOURCE_VIEW_DIMENSION_TEXTURE_2D, -1, -1, -1, L"" };
+      |                                                                                                    ^~
+      |                                                                                                    { }
+5 warnings generated.
+D:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/shim/bbport_overlay.cpp:7:9: warning: 'NOMINMAX' macro redefined [-Wmacro-redefined]
+    7 | #define NOMINMAX
+      |         ^
+<command line>:9:9: note: previous definition is here
+    9 | #define NOMINMAX 1
+      |         ^
+1 warning generated.
+FAILED: [code=1] CMakeFiles/DriveClubGame.dir/D_/a/driveclub-recomp-motion/driveclub-recomp-motion/src/runtime_rig.c.obj 
+C:\msys64\clang64\bin\clang.exe -DBB_DIAGNOSTICS=0 -DMINIZ_STATIC_DEFINE -DNOMINMAX -DPROTOBUF_USE_DLLS -DWIN32_LEAN_AND_MEAN -ID:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/.. -ID:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/../src -ID:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/magic_enum/include -ID:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/magic_enum/include/magic_enum -IC:/msys64/clang64/include/vma -ID:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/miniz -ID:/a/driveclub-recomp-motion/driveclub-recomp-motion/out/gpu/third_party/miniz -ID:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/sirit/src/../include -ID:/a/driveclub-recomp-motion/driveclub-recomp-motion/gpu/third_party/sirit/externals/SPIRV-Headers/include -ffile-prefix-map=D:/a/driveclub-recomp-motion/driveclub-recomp-motion=. -O2 -g -DNDEBUG -std=c11 -fno-omit-frame-pointer -Wall -Wextra -Werror -MD -MT CMakeFiles/DriveClubGame.dir/D_/a/driveclub-recomp-motion/driveclub-recomp-motion/src/runtime_rig.c.obj -MF CMakeFiles\DriveClubGame.dir\D_\a\driveclub-recomp-motion\driveclub-recomp-motion\src\runtime_rig.c.obj.d -o CMakeFiles/DriveClubGame.dir/D_/a/driveclub-recomp-motion/driveclub-recomp-motion/src/runtime_rig.c.obj -c D:/a/driveclub-recomp-motion/driveclub-recomp-motion/src/runtime_rig.c
+In file included from D:/a/driveclub-recomp-motion/driveclub-recomp-motion/src/runtime_rig.c:79:
+D:/a/driveclub-recomp-motion/driveclub-recomp-motion/src/runtime_rig_scan.inc:241:13: error: unused function 'scan_known' [-Werror,-Wunused-function]
+  241 | static bool scan_known(uintptr_t vehicle) {
+      |             ^~~~~~~~~~
+1 error generated.
+ninja: build stopped: subcommand failed.
+Build failed (full log: out/gpu-build.log)
