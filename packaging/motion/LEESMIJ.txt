@@ -1,0 +1,81 @@
+DriveClub Motion-pakket
+=======================
+
+Dit pakket bevat twee programma's:
+
+  DriveClub\      DriveClub Recomp met motion-telemetrie (stuurt wat je auto doet naar SpaceMonkey)
+  SpaceMonkey\    SpaceMonkey met een DriveClub-knop (geeft het door aan je motion-software)
+
+Wat er gebeurt:  DriveClub  ->  SpaceMonkey  ->  Sim Racing Studio / SimTools / ...  ->  je simulator
+
+Er zit niets van het spel zelf in. Je hebt je eigen PS4-dump nodig: de map met de 1.28-update
+(daarin eboot.bin) en de map met het basisspel (daarin game000.dat).
+
+
+EENMALIG INSTELLEN
+------------------
+
+1. Pak dit pakket uit op een plek waar je kunt schrijven, dus NIET in Program Files.
+   Heb je DriveClub Recomp al? Kopieer dan de inhoud van de map DriveClub over je bestaande
+   DriveClub-map heen; je instellingen blijven bewaard.
+
+2. SpaceMonkey: klik in de map SpaceMonkey met rechts op Register.bat en kies
+   "Als administrator uitvoeren". Doe dit opnieuw als je SpaceMonkey naar een andere map verplaatst.
+
+3. DriveClub: start DriveClub\DriveClub.exe, kies bij elke map je eigen game-dump
+   (Browse) en controleer de instellingen. Klik in deze launcher NIET op updates: een officiele
+   update vervangt deze versie en dan verdwijnt de motion.
+
+
+ELKE KEER SPELEN
+----------------
+
+1. Start SpaceMonkey\SpaceMonkeyStart.exe.
+2. Kies bij Config: DriveClubConfig.
+3. Kies bij Telemetry Output wat je motion-software leest. Voor Sim Racing Studio en andere
+   software die "Dirt Rally 2.0" ondersteunt: default_CMED3 (poort 20777).
+4. Klik op de knop DriveClub en dan op Initialize!.
+5. Start DriveClub en rijd een race. Bovenaan het SpaceMonkey-venster staat dan
+   "Receiving telemetry". Neem de eerste bochten flink naar links en rechts: daaraan leert het
+   spel welke kant rechts is.
+6. Laat je motion-software luisteren naar Dirt Rally 2.0 / Codemasters UDP.
+
+
+CONTROLEREN ZONDER SIMULATOR
+----------------------------
+
+Het SpaceMonkey-venster toont bovenaan "FROM THE GAME":
+  up/down     wordt negatief op een heuveltop, positief in een dal
+  right/left  positief in een bocht naar rechts
+  fwd/back    negatief bij remmen
+  slope       positief bergop
+
+Zijn up/down en slope andersom? Zet dan met Kladblok deze regel onderaan in
+  DriveClub\data\user\input_config\default.ini
+    motion_flip_vertical = on
+(dat bestand bestaat pas nadat je het spel een keer gestart hebt).
+
+
+INSTELLINGEN (in DriveClub\data\user\input_config\default.ini)
+--------------------------------------------------------------
+
+  motion = off                  motion uitzetten
+  motion_host = 192.168.1.20    SpaceMonkey draait op een andere pc (dat IP-adres)
+  motion_port = 20790           een andere poort (zet dezelfde in het SpaceMonkey-venster)
+  motion_flip_vertical = on     heuvels en dalen omdraaien
+
+
+MET OF ZONDER STUUR
+-------------------
+
+Met een stuur (dat de game als Logitech-stuur ziet) komen de krachten rechtstreeks uit de
+banden: ook hobbels en curbs per wiel. Met een controller komen ze uit de snelheid van de auto:
+de g-krachten, het draaien, de helling en crashes, maar geen vering per wiel (SpaceMonkey
+berekent die dan zelf).
+
+
+ALS HET NIET WERKT
+------------------
+
+In DriveClub\logs staat per keer spelen een logbestand. De regels die met "Rig:" beginnen
+zeggen wat de motion doet: of de auto gevonden is, welke kant boven is, enzovoort.

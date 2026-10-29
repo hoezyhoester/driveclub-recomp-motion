@@ -1,8 +1,9 @@
 name: Build (motion rig)
 
 # Builds the player release - the launcher, the game runtime with the motion rig
-# telemetry (docs/motion-rig.md) and every library they load - as a zip to
-# download from the run's Artifacts. Nothing of the game is in it: it starts
+# telemetry (docs/motion-rig.md) and every library they load - and packs it with
+# SpaceMonkey and a guide (packaging/motion/LEESMIJ.txt), as one zip to download
+# from the run's Artifacts. Nothing of the game is in it: it starts
 # from the player's own dumps, as the official releases do.
 
 on:
@@ -65,8 +66,33 @@ jobs:
           fi
           tail -n 20 package.log
 
+      # The complete motion pack: this build, SpaceMonkey with its DriveClub button (built from
+      # hoezyhoester/hoezy2, branch burnout-revenge, dist/) and the Dutch guide, in one zip.
+      - name: Motion pack
+        run: |
+          git clone -q --depth 1 -b burnout-revenge https://github.com/hoezyhoester/hoezy2 ../spacemonkey
+          python - "$(ls release/*.zip | head -1)" ../spacemonkey/dist/SpaceMonkey-BurnoutRevenge-DriveClub.zip \
+              packaging/motion/LEESMIJ.txt "pack/DriveClub-Motion-Pakket-${GITHUB_SHA::7}.zip" <<'PYEOF'
+          import os, sys, zipfile
+          game, monkey, guide, dest = sys.argv[1:5]
+          top = "DriveClub-Motion"
+          os.makedirs(os.path.dirname(dest), exist_ok=True)
+          def copy(src, under, out):
+              with zipfile.ZipFile(src) as z:
+                  for info in z.infolist():
+                      parts = info.filename.split("/", 1)
+                      if len(parts) < 2 or not parts[1] or info.is_dir():
+                          continue
+                      out.writestr(top + "/" + under + "/" + parts[1], z.read(info), zipfile.ZIP_DEFLATED)
+          with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as out:
+              copy(game, "DriveClub", out)
+              copy(monkey, "SpaceMonkey", out)
+              out.write(guide, top + "/LEESMIJ.txt")
+          print("wrote", dest, os.path.getsize(dest))
+          PYEOF
+
       - uses: actions/upload-artifact@v4
         with:
-          name: driveclub-recomp-motion-rig-win64
-          path: release/*.zip
-          retention-days: 30
+          name: DriveClub-Motion-Pakket
+          path: pack/*.zip
+          retention-days: 90
