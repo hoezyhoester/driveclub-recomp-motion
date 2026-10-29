@@ -9,13 +9,13 @@ costs nothing.
 
 ## Settings
 
-In `data\user\input_config\default.ini`:
+In `data\user\input_config\default.ini` (none of these lines is there until you add it; `#` starts a comment):
 
 ```
-motion = on              ; off to stop sending
-motion_host = 127.0.0.1  ; the PC SpaceMonkey runs on
+motion = on                 # off to stop sending
+motion_host = 127.0.0.1     # the PC SpaceMonkey runs on
 motion_port = 20790
-motion_flip_vertical = off  ; on if crests and dips (heave and slope) come out upside down
+motion_flip_vertical = off  # on if crests and dips (heave and slope) come out upside down
 ```
 
 For a test run the environment wins: `BB_MOTION=0`, `BB_MOTION_HOST`, `BB_MOTION_PORT`, `BB_MOTION_FLIP_VERTICAL`.

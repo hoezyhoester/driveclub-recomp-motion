@@ -73,7 +73,12 @@ static bool rig_finite3(const float *v) { return isfinite(v[0]) && isfinite(v[1]
 static struct { bool enabled; char host[64]; int port; bool decided; bool flip_up; } rig_cfg={true,"127.0.0.1",20790,false,false};
 static pthread_mutex_t rig_m=PTHREAD_MUTEX_INITIALIZER;
 
-static bool rig_on(const char *v) { return strcmp(v,"0") && strcmp(v,"off") && strcmp(v,"false") && strcmp(v,"no"); }
+static bool rig_on(const char *v) {   /* anything but 0, off, false or no, in any case */
+    char l[16]; size_t i=0;
+    for (; v[i] && i<sizeof l-1; ++i) l[i]=(char)(v[i]>='A' && v[i]<='Z' ? v[i]+32 : v[i]);
+    l[i]=0;
+    return strcmp(l,"0") && strcmp(l,"off") && strcmp(l,"false") && strcmp(l,"no");
+}
 
 /* motion_* lines of default.ini (runtime_input.inc); the environment, read last, wins. */
 void runtime_rig_config(const char *key, const char *value) {
