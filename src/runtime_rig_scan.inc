@@ -233,24 +233,8 @@ static struct {
     float rpm_max_seen;
 } scan;
 
-/* Where DriveClub 1.28 keeps them, found by this search on a player's drives: the object at the car's +0x540
- * holds the engine's speed at +0x1ac (a copy at +0x1cc), in its own unit - about RPM / 28.6, so the 458's
- * 9000 rpm reads 313 - and the gear at +0x98: 0 reverse, 1 neutral, 2 first ... 8 seventh. motion_rpm_scale in
- * default.ini changes the factor. */
-static float rig_rpm_scale_cfg=28.648f;
-static bool scan_known(uintptr_t vehicle) {
-    uint64_t p=0; float r; int32_t g;
-    if (!rig_read(vehicle+0x540,&p,8) || !rig_pointer(p)) return false;
-    if (!rig_read(p+0x1ac,&r,4) || !isfinite(r) || r<0.0f || r>2000.0f) return false;
-    if (!rig_read(p+0x98,&g,4) || g<0 || g>12) return false;
-    scan.rpm_at=(uintptr_t)p+0x1ac; scan.rpm_scale=rig_rpm_scale_cfg;
-    scan.gear_at=(uintptr_t)p+0x98; scan.gear_type=2;
-    snprintf(scan.rpm_label,sizeof scan.rpm_label,"vehicle+0x540 -> +0x1ac");
-    snprintf(scan.gear_label,sizeof scan.gear_label,"vehicle+0x540 -> +0x98");
-    printf("Rig: RPM and gear from their known places (vehicle+0x540 -> +0x1ac and +0x98): now %.0f rpm, gear %d\n",
-           r*scan.rpm_scale,(int)g-1);
-    return true;
-}
+/* motion_rpm_scale in default.ini: a factor on the RPM found (for a unit the search took wrongly). */
+static float rig_rpm_scale_cfg=1.0f;
 
 /* The in-game display's car (its rev counter and gear come from it), from the display's update (runtime_rig.c). */
 static volatile uintptr_t rig_hud_subject_at;
@@ -481,7 +465,7 @@ static void scan_live(float *rpm, float *gear) {
     *rpm=-1.0f; *gear=-1.0f;
     float r;
     if (scan.rpm_at && rig_read(scan.rpm_at,&r,4) && isfinite(r) && r>=0.0f) {
-        *rpm=r*scan.rpm_scale;
+        *rpm=r*scan.rpm_scale*rig_rpm_scale_cfg;
         if (*rpm>scan.rpm_max_seen) scan.rpm_max_seen=*rpm;
     }
     int32_t g;

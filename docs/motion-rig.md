@@ -16,7 +16,7 @@ motion = on                 # off to stop sending
 motion_host = 127.0.0.1     # the PC SpaceMonkey runs on
 motion_port = 20790
 motion_flip_vertical = off  # on if crests and dips (heave and slope) come out upside down
-motion_rpm_scale = 28.648   # the game's engine speed times this is the RPM
+motion_rpm_scale = 1.0      # a factor on the RPM sent, if it does not match the rev counter
 ```
 
 For a test run the environment wins: `BB_MOTION=0`, `BB_MOTION_HOST`, `BB_MOTION_PORT`, `BB_MOTION_FLIP_VERTICAL`.
@@ -32,9 +32,9 @@ object found ...`, `Rig: motion from the car's tyres`). Until it is found, or if
 angular velocity give the g-forces, the yaw rate, the slope and impacts, with no per-wheel suspension. Which way is
 right and which way the car turns are learnt from your steering in the first corners; the log says when.
 
-**RPM and gear** are read where DriveClub 1.28 keeps them (the object at the car's +0x540: the engine speed at
-+0x1ac, in a unit of about RPM / 28.6, and the gear at +0x98, 0 reverse, 1 neutral, 2 first). If those do not read
-right, they are looked for while you drive: fields of the car that rise with its speed and drop at each
+**RPM and gear** are looked for while you drive, first in the data of the car the in-game display (rev counter,
+gear) shows - its update, guest +0x478a20, names that car - then in the car's own objects: fields that rise with the
+car's speed and drop at each
 upshift, and a small whole number that steps up at those drops. After 90 seconds of driving (and every two minutes
 after) the best candidates go to the log (`Rig: RPM candidate`, `Rig: gear candidate`); one that clearly stands out
 is used straight away (`Rig: using RPM from ...`). Drive with gear changes - the automatic gearbox is fine.
