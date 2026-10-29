@@ -171,13 +171,13 @@ static uintptr_t rig_tyre_test_sample(float kin_right, bool *done, char *how, si
     if (++rig_test.samples<60) return 0;
     *done=true;
     const double n=rig_test.samples, my=rig_test.sy/n, vy=rig_test.syy/n-my*my;
-    int best=-1; double best_r=0.5;
+    int best=-1; double best_r=0.8;
     for (int i=0;i<rig_test.n;++i) {
         const double mx=rig_test.sx[i]/n, vx=rig_test.sxx[i]/n-mx*mx, cov=rig_test.sxy[i]/n-mx*my;
         const double r=vx>1e-6 && vy>1e-6 ? cov/sqrt(vx*vy) : 0.0;
         const bool moving=rig_test.load_max[i]-rig_test.load_min[i]>100.0f;
         printf("Rig: tyres at %s: loads %.0f..%.0f N, lateral force against the car's turning r=%.2f%s\n",rig_test.c[i].how,
-               rig_test.load_min[i],rig_test.load_max[i],r,moving && r>0.5 ? "" : " - not live");
+               rig_test.load_min[i],rig_test.load_max[i],r,moving && r>0.8 ? "" : " - not live");
         if (moving && r>best_r) { best=i; best_r=r; }
     }
     if (vy<0.5) {   /* too little cornering to tell: try again */
@@ -225,10 +225,30 @@ static struct {
     float t;                     /* driving time (s) */
     int reports; float next_report;
     /* what is used */
-    uintptr_t rpm_at; float rpm_scale; uintptr_t gear_at; int gear_type;   /* 0 int32, 1 float */
+    uintptr_t rpm_at; float rpm_scale; uintptr_t gear_at; int gear_type;   /* 0 int32, 2 int32 less one */
+    bool known;                  /* the places found on DriveClub 1.28: no search */
     char rpm_label[64], gear_label[64];
     float rpm_max_seen;
 } scan;
+
+/* Where DriveClub 1.28 keeps them, found by this search on a player's drives: the object at the car's +0x540
+ * holds the engine's speed at +0x1ac (a copy at +0x1cc), in its own unit - about RPM / 28.6, so the 458's
+ * 9000 rpm reads 313 - and the gear at +0x98: 0 reverse, 1 neutral, 2 first ... 8 seventh. motion_rpm_scale in
+ * default.ini changes the factor. */
+static float rig_rpm_scale_cfg=28.648f;
+static bool scan_known(uintptr_t vehicle) {
+    uint64_t p=0; float r; int32_t g;
+    if (!rig_read(vehicle+0x540,&p,8) || !rig_pointer(p)) return false;
+    if (!rig_read(p+0x1ac,&r,4) || !isfinite(r) || r<0.0f || r>2000.0f) return false;
+    if (!rig_read(p+0x98,&g,4) || g<0 || g>12) return false;
+    scan.rpm_at=(uintptr_t)p+0x1ac; scan.rpm_scale=rig_rpm_scale_cfg;
+    scan.gear_at=(uintptr_t)p+0x98; scan.gear_type=2;
+    snprintf(scan.rpm_label,sizeof scan.rpm_label,"vehicle+0x540 -> +0x1ac");
+    snprintf(scan.gear_label,sizeof scan.gear_label,"vehicle+0x540 -> +0x98");
+    printf("Rig: RPM and gear from their known places (vehicle+0x540 -> +0x1ac and +0x98): now %.0f rpm, gear %d\n",
+           r*scan.rpm_scale,(int)g-1);
+    return true;
+}
 
 static void scan_reset(uintptr_t vehicle, uintptr_t state) {
     if (!scan.obj) scan.obj=calloc(SCAN_OBJECTS,sizeof(ScanObject));
@@ -261,7 +281,9 @@ static void scan_reset(uintptr_t vehicle, uintptr_t state) {
         scan.obj[m].f[k].in_range=true; scan.obj[m].f[k].min=1e30f; scan.obj[m].f[k].max=-1e30f;
         scan.obj[m].i[k].ok=true; scan.obj[m].i[k].lo=32767; scan.obj[m].i[k].hi=-32768;
     }
-    printf("Rig: looking for the engine's RPM and gear in %d objects of the car; drive a few minutes with gear changes\n",scan.n_obj);
+    scan.known=scan_known(vehicle);
+    if (!scan.known)
+        printf("Rig: looking for the engine's RPM and gear in %d objects of the car; drive a few minutes with gear changes\n",scan.n_obj);
 }
 
 /* a field's value as RPM: rpm itself (300..16000) or rad/s (30..1700) */
@@ -276,7 +298,7 @@ static int scan_match(const ScanFloat *f, const ScanInt *g) {
     int m=0;
     for (int a=0;a<g->n_up && a<SCAN_EVENTS;++a)
         for (int b=0;b<f->n_events && b<SCAN_EVENTS;++b)
-            if (fabsf(g->up_t[a]-f->event_t[b])<0.4f) { ++m; break; }
+            if (fabsf(g->up_t[a]-f->event_t[b])<0.8f) { ++m; break; }
     return m;
 }
 
@@ -286,6 +308,10 @@ static void scan_report(bool final) {
     for (int m=0;m<scan.n_obj;++m) for (int k=0;k<SCAN_FIELDS;++k) {
         const ScanFloat *f=&scan.obj[m].f[k]; float scale;
         if (!f->in_range || f->drops<3 || !scan_rpm_range(f->min,f->max,&scale)) continue;
+        bool dup=false;   /* a copy of one already listed: the same values in the same object */
+        for (int x=0;x<n_rpm;++x) { const ScanFloat *o2=&scan.obj[rpm[x].o].f[rpm[x].k];
+            if (rpm[x].o==m && o2->min==f->min && o2->max==f->max && o2->drops==f->drops) dup=true; }
+        if (dup) continue;
         Cand c={m,k,f->drops,scale,0};
         int at=n_rpm<6 ? n_rpm++ : 5;
         if (at==5 && n_rpm==6 && rpm[5].score>=c.score) continue;
@@ -335,6 +361,12 @@ static void scan_report(bool final) {
 static void scan_sample(uintptr_t vehicle, uintptr_t state, float speed, float throttle, float dt) {
     if (vehicle!=scan.vehicle || state!=scan.state) scan_reset(vehicle,state);
     if (!scan.obj || !scan.n_obj) return;
+    if (scan.known) {   /* still there? (a stale pointer reads nothing, or nonsense) */
+        float r;
+        if (rig_read(scan.rpm_at,&r,4) && isfinite(r) && r>=0.0f && r<2000.0f) return;
+        printf("Rig: the known RPM place stopped reading right; searching instead\n");
+        scan.known=false; scan.rpm_at=scan.gear_at=0;
+    }
     const bool driving=speed>3.0f;
     if (!driving) return;
     scan.t+=dt;
@@ -405,5 +437,8 @@ static void scan_live(float *rpm, float *gear) {
         if (*rpm>scan.rpm_max_seen) scan.rpm_max_seen=*rpm;
     }
     int32_t g;
-    if (scan.gear_at && rig_read(scan.gear_at,&g,4) && g>=-1 && g<=9) *gear=(float)g;
+    if (scan.gear_at && rig_read(scan.gear_at,&g,4) && g>=-1 && g<=12) {
+        if (scan.gear_type==2) g-=1;   /* reverse -1, neutral 0, first 1 */
+        *gear=(float)g;
+    }
 }

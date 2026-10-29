@@ -96,6 +96,7 @@ void runtime_rig_config(const char *key, const char *value) {
     else if (!strcmp(key,"motion_host")) snprintf(rig_cfg.host,sizeof rig_cfg.host,"%s",value);
     else if (!strcmp(key,"motion_port")) { const int p=atoi(value); if (p>0 && p<65536) rig_cfg.port=p; }
     else if (!strcmp(key,"motion_flip_vertical")) rig_cfg.flip_up=rig_on(value);
+    else if (!strcmp(key,"motion_rpm_scale")) { const float f=(float)atof(value); if (f>0.0f && f<1000.0f) rig_rpm_scale_cfg=f; }
     pthread_mutex_unlock(&rig_m);
 }
 static void rig_decide(void) {
@@ -317,7 +318,9 @@ static void *rig_idle_thread(void *arg) {
         const float kin_right=cam.kin_right;
         const uintptr_t veh_now=cam.vehicle;
         pthread_mutex_unlock(&rig_m);
-        if (want_tyres && !testing && moving && now-test_us>(test_us ? 30000000u : 0u)) {
+        static int tyre_rounds;   /* three tries a session: the motion from the velocity is fine without them */
+        if (want_tyres && !testing && moving && tyre_rounds<3 && now-test_us>(test_us ? 30000000u : 0u)) {
+            ++tyre_rounds;
             RigStateCandidate c[RIG_STATE_CANDIDATES];
             const int n=rig_find_states(veh_now,c);
             pthread_mutex_lock(&rig_m); cam.test_us=now; pthread_mutex_unlock(&rig_m);
@@ -342,7 +345,8 @@ static void *rig_idle_thread(void *arg) {
                 }
                 pthread_mutex_unlock(&rig_m);
                 if (live) printf("Rig: the car's live tyres are at %s\n",how);
-                else printf("Rig: none of them is live; the motion stays from the car's velocity (tried again in 30 s)\n");
+                else if (tyre_rounds<3) printf("Rig: none of them is live; the motion stays from the car's velocity (tried again in 30 s)\n");
+                else printf("Rig: none of them is live; the motion stays from the car's velocity for this session\n");
             }
         }
         static bool was_moving;

@@ -72,10 +72,11 @@ Met een stuur komen de krachten rechtstreeks uit de banden. Met een controller z
 de banden van je auto zelf op; in het log staat dan "Rig: motion from the car's tyres". Lukt dat
 niet, dan komen de krachten uit de snelheid van de auto (zonder vering per wiel).
 
-Het toerental (RPM) en de versnelling worden gezocht terwijl je rijdt: rij een paar minuten met
-flink optrekken en schakelen (automaat mag). Gevonden? Dan staat in SpaceMonkey bij "engine" een
-toerental en een versnelling, en in het log "Rig: using RPM from ...". Daarna werken ook
-toerental- en schakel-effecten op shakers zoals een ButtKicker.
+Het toerental (RPM) en de versnelling komen uit het spel zelf: in SpaceMonkey staat bij "engine"
+een toerental en een versnelling, en in het log "Rig: RPM and gear from their known places".
+Daarmee werken ook toerental- en schakel-effecten op shakers zoals een ButtKicker.
+Klopt het toerental niet met de toerenteller in het spel? Pas dan in default.ini de factor aan:
+  motion_rpm_scale = 28.648     (hoger = hoger toerental)
 
 Wielspin en blokkerende wielen gaan per wiel mee (als de banden gevonden zijn), voor
 wheelspin- en ABS-effecten in Sim Racing Studio of SimHub.
