@@ -79,31 +79,96 @@ static bool rig_tyres_plausible(const float *st) {
     return sum>1500.0f && sum<120000.0f;
 }
 
-/* The car's simulation state: vehicle +0x68 -> +0x10 first; otherwise an object the car points to (or one level
- * further) whose tyres look right. */
-static uintptr_t rig_find_state(uintptr_t vehicle, char *how, size_t how_size) {
+/* Objects that could be the car's simulation state: vehicle +0x68 -> +0x10 (the replay code's path), and every
+ * object the car points to (its first 0x1000 bytes), or one level further, whose tyres look right. Which one is
+ * live is told by rig_tyre_test below: a copy or a template reads right but never moves. */
+#define RIG_STATE_CANDIDATES 16
+static uintptr_t rig_rejected[64]; static int rig_n_rejected;
+static bool rig_is_rejected(uintptr_t a) { for (int i=0;i<rig_n_rejected;++i) if (rig_rejected[i]==a) return true; return false; }
+static void rig_reject(uintptr_t a) { if (rig_n_rejected<64 && !rig_is_rejected(a)) rig_rejected[rig_n_rejected++]=a; }
+
+typedef struct { uintptr_t at; char how[40]; } RigStateCandidate;
+static int rig_add_state(RigStateCandidate *c, int n, uintptr_t at, const char *how) {
+    if (n>=RIG_STATE_CANDIDATES || rig_is_rejected(at)) return n;
+    for (int i=0;i<n;++i) if (c[i].at==at) return n;
     static float st[0xc00/4];
+    if (!rig_read(at,st,sizeof st) || !rig_tyres_plausible(st)) return n;
+    c[n].at=at; snprintf(c[n].how,sizeof c[n].how,"%s",how);
+    return n+1;
+}
+static int rig_find_states(uintptr_t vehicle, RigStateCandidate *c) {
+    int n=0; char how[40];
     uint64_t a=0, b=0;
-    if (rig_read(vehicle+0x68,&a,8) && rig_pointer(a) && rig_read(a+0x10,&b,8) && rig_pointer(b) &&
-        rig_read(b,st,sizeof st) && rig_tyres_plausible(st)) {
-        snprintf(how,how_size,"vehicle+0x68 -> +0x10");
-        return (uintptr_t)b;
-    }
-    uint64_t ptrs[0x400/8];
-    if (!rig_read(vehicle,ptrs,sizeof ptrs)) return 0;
-    for (int i=0;i<(int)(sizeof ptrs/8);++i) {
-        if (!rig_pointer(ptrs[i])) continue;
-        if (rig_read(ptrs[i],st,sizeof st) && rig_tyres_plausible(st)) {
-            snprintf(how,how_size,"vehicle+0x%x",i*8); return (uintptr_t)ptrs[i];
-        }
-        uint64_t inner[0x100/8];
+    if (rig_read(vehicle+0x68,&a,8) && rig_pointer(a) && rig_read(a+0x10,&b,8) && rig_pointer(b))
+        n=rig_add_state(c,n,(uintptr_t)b,"vehicle+0x68 -> +0x10");
+    static uint64_t ptrs[0x1000/8];
+    if (!rig_read(vehicle,ptrs,sizeof ptrs)) return n;
+    for (int i=0;i<(int)(sizeof ptrs/8) && n<RIG_STATE_CANDIDATES;++i) {
+        if (!rig_pointer(ptrs[i]) || ptrs[i]==vehicle) continue;
+        snprintf(how,sizeof how,"vehicle+0x%x",i*8);
+        n=rig_add_state(c,n,(uintptr_t)ptrs[i],how);
+        uint64_t inner[0x200/8];
         if (!rig_read(ptrs[i],inner,sizeof inner)) continue;
-        for (int j=0;j<(int)(sizeof inner/8);++j)
-            if (rig_pointer(inner[j]) && rig_read(inner[j],st,sizeof st) && rig_tyres_plausible(st)) {
-                snprintf(how,how_size,"vehicle+0x%x -> +0x%x",i*8,j*8); return (uintptr_t)inner[j];
-            }
+        for (int j=0;j<(int)(sizeof inner/8) && n<RIG_STATE_CANDIDATES;++j) {
+            if (!rig_pointer(inner[j]) || inner[j]==vehicle || inner[j]==ptrs[i]) continue;
+            snprintf(how,sizeof how,"vehicle+0x%x -> +0x%x",i*8,j*8);
+            n=rig_add_state(c,n,(uintptr_t)inner[j],how);
+        }
     }
-    return 0;
+    return n;
+}
+
+/* Telling the live tyres from a copy: over three seconds of driving, the loads must move and the tyres' lateral
+ * force must follow the push the car's own velocity shows (kinematic, + right). */
+static struct {
+    int n; RigStateCandidate c[RIG_STATE_CANDIDATES];
+    int samples;
+    float load_min[RIG_STATE_CANDIDATES], load_max[RIG_STATE_CANDIDATES];
+    double sx[RIG_STATE_CANDIDATES], sy, sxx[RIG_STATE_CANDIDATES], syy, sxy[RIG_STATE_CANDIDATES];
+} rig_test;
+
+static void rig_tyre_test_start(const RigStateCandidate *c, int n) {
+    memset(&rig_test,0,sizeof rig_test);
+    rig_test.n=n; memcpy(rig_test.c,c,n*sizeof *c);
+    for (int i=0;i<n;++i) { rig_test.load_min[i]=1e30f; rig_test.load_max[i]=-1e30f; }
+}
+/* One sample (the idle thread, 20 Hz, driving above 8 m/s). Returns the live state once decided, 0 before; all
+ * candidates that fail are rejected. *done is set when the test ended (with or without a winner). */
+static uintptr_t rig_tyre_test_sample(float kin_right, bool *done, char *how, size_t how_size) {
+    *done=false;
+    if (!rig_test.n) { *done=true; return 0; }
+    rig_test.sy+=kin_right; rig_test.syy+=(double)kin_right*kin_right;
+    for (int i=0;i<rig_test.n;++i) {
+        float t[12];   /* loads +0xa50, lateral +0xa60, longitudinal +0xa70 */
+        if (!rig_read(rig_test.c[i].at+0xa50,t,sizeof t)) { rig_test.load_min[i]=-1e30f; continue; }
+        const float load=t[0]+t[1]+t[2]+t[3], lat=t[4]+t[5]+t[6]+t[7];
+        if (load<rig_test.load_min[i]) rig_test.load_min[i]=load;
+        if (load>rig_test.load_max[i]) rig_test.load_max[i]=load;
+        const float x=load>500.0f ? -lat/load*RIG_G : 0.0f;
+        rig_test.sx[i]+=x; rig_test.sxx[i]+=(double)x*x; rig_test.sxy[i]+=(double)x*kin_right;
+    }
+    if (++rig_test.samples<60) return 0;
+    *done=true;
+    const double n=rig_test.samples, my=rig_test.sy/n, vy=rig_test.syy/n-my*my;
+    int best=-1; double best_r=0.5;
+    for (int i=0;i<rig_test.n;++i) {
+        const double mx=rig_test.sx[i]/n, vx=rig_test.sxx[i]/n-mx*mx, cov=rig_test.sxy[i]/n-mx*my;
+        const double r=vx>1e-6 && vy>1e-6 ? cov/sqrt(vx*vy) : 0.0;
+        const bool moving=rig_test.load_max[i]-rig_test.load_min[i]>100.0f;
+        printf("Rig: tyres at %s: loads %.0f..%.0f N, lateral force against the car's turning r=%.2f%s\n",rig_test.c[i].how,
+               rig_test.load_min[i],rig_test.load_max[i],r,moving && r>0.5 ? "" : " - not live");
+        if (moving && r>best_r) { best=i; best_r=r; }
+    }
+    if (vy<0.5) {   /* too little cornering to tell: try again */
+        printf("Rig: not enough cornering to test the tyres; trying again\n");
+        rig_test.samples=0; rig_test.sy=rig_test.syy=0;
+        for (int i=0;i<rig_test.n;++i) { rig_test.sx[i]=rig_test.sxx[i]=rig_test.sxy[i]=0; rig_test.load_min[i]=1e30f; rig_test.load_max[i]=-1e30f; }
+        *done=false; return 0;
+    }
+    for (int i=0;i<rig_test.n;++i) if (i!=best) rig_reject(rig_test.c[i].at);
+    if (best<0) return 0;
+    snprintf(how,how_size,"%s",rig_test.c[best].how);
+    return rig_test.c[best].at;
 }
 
 /* ---- 2. RPM and gear ------------------------------------------------------------------------------------- */
@@ -149,7 +214,7 @@ static void scan_reset(uintptr_t vehicle, uintptr_t state) {
     if (!scan.obj) return;
     memset(scan.obj,0,SCAN_OBJECTS*sizeof(ScanObject));
     scan.vehicle=vehicle; scan.state=state; scan.n_obj=0; scan.samples=0; scan.hist_pos=0; scan.t=0;
-    scan.reports=0; scan.next_report=90.0f;
+    scan.reports=0; scan.next_report=60.0f;
     { const char *e=getenv("BB_MOTION_SCAN_FIRST"); if (e && atof(e)>0) scan.next_report=(float)atof(e); }   /* tests */
     scan.rpm_at=0; scan.gear_at=0; scan.rpm_max_seen=0;
     /* the objects: the car, its state, and what the car (its first 0x400 bytes) and the state (0x100) point to */
@@ -160,7 +225,7 @@ static void scan_reset(uintptr_t vehicle, uintptr_t state) {
     }
     for (int r=0;r<2;++r) {
         if (!roots[r]) continue;
-        uint64_t ptrs[0x400/8]; const int n=r==0 ? 0x400/8 : 0x100/8;
+        uint64_t ptrs[0x1000/8]; const int n=r==0 ? 0x1000/8 : 0x100/8;
         if (!rig_read(roots[r],ptrs,n*8)) continue;
         for (int k=0;k<n && scan.n_obj<SCAN_OBJECTS;++k) {
             if (!rig_pointer(ptrs[k]) || ptrs[k]==vehicle || ptrs[k]==state) continue;
@@ -298,6 +363,15 @@ static void scan_sample(uintptr_t vehicle, uintptr_t state, float speed, float t
     if (scan.t>=scan.next_report && scan.reports<4) {
         ++scan.reports; scan.next_report=scan.t+120.0f;
         scan_report(scan.reports==4);
+    }
+}
+
+/* The car stopped (or the race ended): the candidates so far, once, if there was enough driving. */
+static void scan_stopped(void) {
+    static float reported_at=-1.0f;
+    if (scan.obj && scan.t>=30.0f && scan.t-reported_at>=30.0f && scan.reports<6) {
+        reported_at=scan.t; ++scan.reports;
+        scan_report(false);
     }
 }
 

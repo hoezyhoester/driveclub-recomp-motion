@@ -248,6 +248,9 @@ static struct {
     /* the car's own object and its simulation state, found from the target (the idle thread) */
     uintptr_t target, vehicle, state; float target_lin[3]; uint64_t search_us; float throttle;
     char vehicle_how[96], state_how[48]; int state_bad;
+    float kin_right;          /* the push to the right from the velocity (m/s^2), for the tyre test */
+    bool testing; uint64_t test_us;
+    uint32_t same_load; int same_frames;   /* tyres that stop moving are a copy after all */
 } cam={.lead=-1,.f={0,0,1},.up_axis=-1,.right_sign=1.0f,.yaw_sign=1.0f};
 
 static void rig_put_f(uint8_t *p, size_t at, float v) { memcpy(p+at,&v,4); }
@@ -294,22 +297,57 @@ static void *rig_idle_thread(void *arg) {
         const float dt=(float)(now-last)*1e-6f; last=now;
 
         if (search) {
-            char how[96]="", state_how[48]="";
+            char how[96]="";
             const uintptr_t v=rig_find_vehicle(target,lin,how,sizeof how);
-            const uintptr_t s=v ? rig_find_state(v,state_how,sizeof state_how) : 0;
             static unsigned tries;
-            if (v || ++tries%30==1) {
-                if (v) printf("Rig: the car's object found (%s)%s%s\n",how,s ? "; its tyres at " : "; its tyres not found",s ? state_how : "");
-                else printf("Rig: the car's object not found from the camera yet\n");
-            }
+            if (v) printf("Rig: the car's object found (%s)\n",how);
+            else if (++tries%30==1) printf("Rig: the car's object not found from the camera yet\n");
             if (v) {
                 pthread_mutex_lock(&rig_m);
-                cam.vehicle=v; cam.state=s; cam.told=false; cam.state_bad=0;
+                cam.vehicle=v; cam.state=0; cam.testing=false; cam.test_us=0;
                 snprintf(cam.vehicle_how,sizeof cam.vehicle_how,"%s",how);
-                snprintf(cam.state_how,sizeof cam.state_how,"%s",state_how);
                 pthread_mutex_unlock(&rig_m);
             }
         }
+        /* the car's tyres: candidates, then a test drive of three seconds to find the live ones */
+        pthread_mutex_lock(&rig_m);
+        const bool want_tyres=cam.vehicle && !cam.state;
+        const bool testing=cam.testing;
+        const uint64_t test_us=cam.test_us;
+        const float kin_right=cam.kin_right;
+        const uintptr_t veh_now=cam.vehicle;
+        pthread_mutex_unlock(&rig_m);
+        if (want_tyres && !testing && moving && now-test_us>(test_us ? 30000000u : 0u)) {
+            RigStateCandidate c[RIG_STATE_CANDIDATES];
+            const int n=rig_find_states(veh_now,c);
+            pthread_mutex_lock(&rig_m); cam.test_us=now; pthread_mutex_unlock(&rig_m);
+            if (n) {
+                printf("Rig: %d objects that could be the car's tyres; testing them while you drive and corner\n",n);
+                rig_tyre_test_start(c,n);
+                pthread_mutex_lock(&rig_m); cam.testing=true; pthread_mutex_unlock(&rig_m);
+            } else {
+                static unsigned told_none;
+                if (told_none++<3) printf("Rig: no object that could be the car's tyres; the motion stays from its velocity\n");
+            }
+        }
+        if (want_tyres && testing && moving && speed>8.0f) {
+            bool done; char how[40]="";
+            const uintptr_t live=rig_tyre_test_sample(kin_right,&done,how,sizeof how);
+            if (done) {
+                pthread_mutex_lock(&rig_m);
+                cam.testing=false;
+                if (live && cam.vehicle==veh_now) {
+                    cam.state=live; cam.told=false; cam.state_bad=0; cam.same_frames=0;
+                    snprintf(cam.state_how,sizeof cam.state_how,"%s",how);
+                }
+                pthread_mutex_unlock(&rig_m);
+                if (live) printf("Rig: the car's live tyres are at %s\n",how);
+                else printf("Rig: none of them is live; the motion stays from the car's velocity (tried again in 30 s)\n");
+            }
+        }
+        static bool was_moving;
+        if (was_moving && !moving) scan_stopped();
+        was_moving=moving;
         if (moving && vehicle && dt>0.0f && dt<0.5f) scan_sample(vehicle,state,speed,throttle,dt);
     }
     return NULL;
@@ -538,7 +576,18 @@ static void rig_camera_step(int slot, uint64_t now, const RigInputs *in) {
     /* the car's own state, once found: its tyres, as with a wheel */
     if (cam.state) {
         static float st[0xc00/4];
+        uint32_t bits=0;
         if (rig_read(cam.state,st,sizeof st) && rig_tyres_plausible(st)) {
+            const float sum=st[0xa50/4]+st[0xa50/4+1]+st[0xa50/4+2]+st[0xa50/4+3];
+            memcpy(&bits,&sum,4);
+            /* the same loads to the bit for two seconds while moving: not live after all */
+            if (speed>5.0f && bits==cam.same_load) ++cam.same_frames; else cam.same_frames=0;
+            cam.same_load=bits;
+            if (cam.same_frames>120) {
+                printf("Rig: the tyres at %s stopped moving; back to the car's velocity\n",cam.state_how);
+                rig_reject(cam.state); cam.state=0; cam.told=false; cam.same_frames=0;
+                goto kinematic;
+            }
             cam.state_bad=0;
             uint8_t block[0x30]={0}; memcpy(block+0x18,&speed,4);
             if (!cam.told) { cam.told=true; printf("Rig: motion from the car's tyres (found without a wheel)\n"); }
@@ -547,6 +596,7 @@ static void rig_camera_step(int slot, uint64_t now, const RigInputs *in) {
         }
         if (++cam.state_bad>30) { printf("Rig: the car's state no longer reads right; back to its velocity\n"); cam.state=0; cam.vehicle=0; cam.told=false; }
     }
+kinematic:
     if (!cam.told) { cam.told=true; printf("Rig: motion from the car's velocity\n"); }
     const float dt=cam.us ? fminf(0.1f,fmaxf(0.001f,(float)(now-cam.us)*1e-6f)) : 0.016f;
     cam.us=now;
@@ -593,6 +643,7 @@ static void rig_camera_step(int slot, uint64_t now, const RigInputs *in) {
     }
     float R[3]; for (int k=0;k<3;++k) R[k]=R0[k]*cam.right_sign;
     const float right=rig_v_dot(cam.a,R), up=rig_v_dot(cam.a,U), fwd=rig_v_dot(cam.a,cam.f);
+    cam.kin_right=right;
 
     /* the yaw rate, + turning right: with the steering, as the side */
     const float w_up=rig_v_dot(w,U);
