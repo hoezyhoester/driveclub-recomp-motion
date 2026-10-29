@@ -570,6 +570,8 @@ static void rig_camera_step(int slot, uint64_t now, const RigInputs *in) {
         const bool lead_alive=cam.lead>=0 && rig_targets[cam.lead].target && now-rig_targets[cam.lead].us<250000;
         if (lead_alive && rig_targets[slot].last_hits<=rig_targets[cam.lead].last_hits) return;
         cam.lead=slot; cam.us=0;
+        /* another car (a new race, a replay): its object is found again */
+        cam.vehicle=0; cam.state=0; cam.testing=false; cam.told=false;
         printf("Rig: following the camera's car (target %p); without a Logitech wheel the motion comes from its velocity\n",
                rig_targets[slot].target);
     }

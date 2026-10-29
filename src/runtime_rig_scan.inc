@@ -227,6 +227,8 @@ static struct {
     /* what is used */
     uintptr_t rpm_at; float rpm_scale; uintptr_t gear_at; int gear_type;   /* 0 int32, 2 int32 less one */
     bool known;                  /* the places found on DriveClub 1.28: no search */
+    float still_s;               /* how long the car has stood still */
+    float check_s, check_next;   /* the engine check lines: driving time, when the next is due */
     char rpm_label[64], gear_label[64];
     float rpm_max_seen;
 } scan;
@@ -357,14 +359,38 @@ static void scan_report(bool final) {
     }
 }
 
+/* For finding the engine's fields by eye: every two seconds for the first two minutes of a car, the speed, the
+ * throttle and the object at the car's +0x540, around where its engine speed and gear were found, to the log. */
+static void scan_check(uintptr_t vehicle, float speed, float throttle, float dt) {
+    static uintptr_t last_vehicle;
+    if (vehicle!=last_vehicle) { last_vehicle=vehicle; scan.check_s=0; scan.check_next=0; }
+    scan.check_s+=dt;
+    if (scan.check_s>120.0f || scan.check_s<scan.check_next) return;
+    scan.check_next=scan.check_s+2.0f;
+    uint64_t p=0; float f[32]; int32_t g[8];
+    if (!rig_read(vehicle+0x540,&p,8) || !rig_pointer(p) || !rig_read(p+0x180,f,sizeof f) || !rig_read(p+0x88,g,sizeof g)) {
+        printf("Rig: engine check: the object at the car's +0x540 does not read\n"); return;
+    }
+    char line[512]; int n=snprintf(line,sizeof line,"Rig: engine check %.0fs %3.0f km/h thr %.2f | +0x88.. int",scan.check_s,speed*3.6f,throttle);
+    for (int i=0;i<8 && n<(int)sizeof line;++i) n+=snprintf(line+n,sizeof line-n," %d",(int)g[i]);
+    n+=snprintf(line+n,sizeof line-n," | +0x180.. float");
+    for (int i=0;i<32 && n<(int)sizeof line;++i) n+=snprintf(line+n,sizeof line-n," %.0f",isfinite(f[i]) && fabsf(f[i])<1e6f ? f[i] : -1.0f);
+    printf("%s\n",line);
+}
+
 /* One sample (the idle thread, 20 times a second) while the car is driven. */
 static void scan_sample(uintptr_t vehicle, uintptr_t state, float speed, float throttle, float dt) {
     if (vehicle!=scan.vehicle || state!=scan.state) scan_reset(vehicle,state);
     if (!scan.obj || !scan.n_obj) return;
+    scan_check(vehicle,speed,throttle,dt);
     if (scan.known) {   /* still there? (a stale pointer reads nothing, or nonsense) */
         float r;
-        if (rig_read(scan.rpm_at,&r,4) && isfinite(r) && r>=0.0f && r<2000.0f) return;
-        printf("Rig: the known RPM place stopped reading right; searching instead\n");
+        if (rig_read(scan.rpm_at,&r,4) && isfinite(r) && r>=0.0f && r<2000.0f) {
+            /* a car standing still idles: an engine speed well past idle there is not the engine's */
+            if (speed<1.0f) scan.still_s+=dt; else scan.still_s=0.0f;
+            if (scan.still_s<2.0f || r<90.0f) return;
+            printf("Rig: the known RPM place reads %.0f with the car standing still - not the engine; searching instead\n",r);
+        } else printf("Rig: the known RPM place stopped reading right; searching instead\n");
         scan.known=false; scan.rpm_at=scan.gear_at=0;
     }
     const bool driving=speed>3.0f;
