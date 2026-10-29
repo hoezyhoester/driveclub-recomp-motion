@@ -96,23 +96,44 @@ static int rig_add_state(RigStateCandidate *c, int n, uintptr_t at, const char *
     c[n].at=at; snprintf(c[n].how,sizeof c[n].how,"%s",how);
     return n+1;
 }
+/* Breadth first from the car, three levels deep (the first 0x1000 bytes of the car, 0x400 of what it points to,
+ * 0x200 below that), at most 4000 objects: the ones whose tyres look right. */
 static int rig_find_states(uintptr_t vehicle, RigStateCandidate *c) {
-    int n=0; char how[40];
+    int n=0;
     uint64_t a=0, b=0;
     if (rig_read(vehicle+0x68,&a,8) && rig_pointer(a) && rig_read(a+0x10,&b,8) && rig_pointer(b))
         n=rig_add_state(c,n,(uintptr_t)b,"vehicle+0x68 -> +0x10");
+    enum { MAX=4000 };
+    static struct { uintptr_t at; int depth; char how[40]; } q[MAX];
+    static uintptr_t seen[8192];
+    memset(seen,0,sizeof seen);
+    int head=0, tail=0;
+    q[tail].at=vehicle; q[tail].depth=0; snprintf(q[tail].how,sizeof q[tail].how,"vehicle"); ++tail;
+    seen[(vehicle>>3)&8191]=vehicle;
     static uint64_t ptrs[0x1000/8];
-    if (!rig_read(vehicle,ptrs,sizeof ptrs)) return n;
-    for (int i=0;i<(int)(sizeof ptrs/8) && n<RIG_STATE_CANDIDATES;++i) {
-        if (!rig_pointer(ptrs[i]) || ptrs[i]==vehicle) continue;
-        snprintf(how,sizeof how,"vehicle+0x%x",i*8);
-        n=rig_add_state(c,n,(uintptr_t)ptrs[i],how);
-        uint64_t inner[0x200/8];
-        if (!rig_read(ptrs[i],inner,sizeof inner)) continue;
-        for (int j=0;j<(int)(sizeof inner/8) && n<RIG_STATE_CANDIDATES;++j) {
-            if (!rig_pointer(inner[j]) || inner[j]==vehicle || inner[j]==ptrs[i]) continue;
-            snprintf(how,sizeof how,"vehicle+0x%x -> +0x%x",i*8,j*8);
-            n=rig_add_state(c,n,(uintptr_t)inner[j],how);
+    while (head<tail && n<RIG_STATE_CANDIDATES) {
+        const uintptr_t at=q[head].at; const int depth=q[head].depth; char how[40]; snprintf(how,sizeof how,"%s",q[head].how); ++head;
+        if (depth>0) {
+            float probe[12];
+            if (rig_read(at+0xa50,probe,sizeof probe)) {
+                float sum=0; bool ok=true;
+                for (int i=0;i<4;++i) { if (!isfinite(probe[i]) || probe[i]<-100.0f || probe[i]>50000.0f) ok=false; sum+=probe[i]; }
+                if (ok && sum>1500.0f && sum<120000.0f) n=rig_add_state(c,n,at,how);
+            }
+        }
+        if (depth>=3) continue;
+        const size_t span=depth==0 ? 0x1000 : depth==1 ? 0x400 : 0x200;
+        if (!rig_read(at,ptrs,span)) continue;
+        for (size_t i=0;i<span/8 && tail<MAX;++i) {
+            const uint64_t p=ptrs[i];
+            if (!rig_pointer(p)) continue;
+            uintptr_t *slot=&seen[(p>>3)&8191];
+            if (*slot==p) continue;
+            *slot=p;
+            q[tail].at=(uintptr_t)p; q[tail].depth=depth+1;
+            if (depth==0) snprintf(q[tail].how,sizeof q[tail].how,"vehicle+0x%x",(unsigned)(i*8));
+            else snprintf(q[tail].how,sizeof q[tail].how,"%.24s->+0x%x",how,(unsigned)(i*8));
+            ++tail;
         }
     }
     return n;
@@ -214,7 +235,7 @@ static void scan_reset(uintptr_t vehicle, uintptr_t state) {
     if (!scan.obj) return;
     memset(scan.obj,0,SCAN_OBJECTS*sizeof(ScanObject));
     scan.vehicle=vehicle; scan.state=state; scan.n_obj=0; scan.samples=0; scan.hist_pos=0; scan.t=0;
-    scan.reports=0; scan.next_report=60.0f;
+    scan.reports=0; scan.next_report=30.0f;
     { const char *e=getenv("BB_MOTION_SCAN_FIRST"); if (e && atof(e)>0) scan.next_report=(float)atof(e); }   /* tests */
     scan.rpm_at=0; scan.gear_at=0; scan.rpm_max_seen=0;
     /* the objects: the car, its state, and what the car (its first 0x400 bytes) and the state (0x100) point to */
@@ -360,9 +381,9 @@ static void scan_sample(uintptr_t vehicle, uintptr_t state, float speed, float t
     scan.speed_hist[scan.hist_pos]=speed;
     scan.hist_pos=(scan.hist_pos+1)%SCAN_HISTORY;
     ++scan.samples;
-    if (scan.t>=scan.next_report && scan.reports<4) {
-        ++scan.reports; scan.next_report=scan.t+120.0f;
-        scan_report(scan.reports==4);
+    if (scan.t>=scan.next_report && scan.reports<10) {
+        ++scan.reports; scan.next_report=scan.t+30.0f;
+        scan_report(scan.reports==10);
     }
 }
 
