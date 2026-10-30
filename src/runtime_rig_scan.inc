@@ -351,9 +351,12 @@ static int scan_ratio_score(const ScanFloat *f, float *levels, int *n_levels) {
     for (int a=0;a<n;++a) levels[a]=lv[a];
     *n_levels=n;
     int score=n*100+(int)(100.0f*f->ratio_stable/f->ratio_n);
+    /* a running engine never reads 0 while the car drives (0..8000 on 30 Oct was a switch, not an engine) */
+    if (f->min<0.05f*f->max) return 0;
     if (f->still_max>=f->still_min) {   /* standing still: an engine idles, above zero and well below its top */
         const bool idles=f->still_min>0.03f*f->max && f->still_max<=0.5f*f->max;
-        score+=idles ? 200 : -300;
+        if (!idles) return 0;
+        score+=200;
     }
     return score;
 }
@@ -651,7 +654,7 @@ static void rig_gear_report(void) {
             if (rank==g) { idx=i; best=rig_gear.centre[i]; }
         }
         if (idx<0) break;
-        n+=snprintf(line+n,sizeof line-n," %d: %.0f (%u samples)",g+1,best*60.0f/(2.0f*3.14159265f)/3.6f,rig_gear.hits[idx]);
+        n+=snprintf(line+n,sizeof line-n," %d: %.0f (%u samples)",g+1,best*scan.rpm_scale/3.6f,rig_gear.hits[idx]);
         if (n>=(int)sizeof line-24) break;
     }
     printf("%s\n",line);
