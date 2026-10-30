@@ -384,8 +384,8 @@ static void scan_report(bool final) {
             score+=idles ? 50 : -50;
         }
         Cand c={m,k,score,scale,0};
-        int at=n_rpm<10 ? n_rpm++ : 9;
-        if (at==9 && n_rpm==10 && rpm[9].score>=c.score) continue;
+        if (n_rpm==10 && rpm[9].score>=c.score) continue;
+        const int at=n_rpm<10 ? n_rpm++ : 9;
         rpm[at]=c;
         for (int x=at;x>0 && rpm[x].score>rpm[x-1].score;--x) { Cand t=rpm[x]; rpm[x]=rpm[x-1]; rpm[x-1]=t; }
     }
@@ -397,15 +397,15 @@ static void scan_report(bool final) {
         if ((float)g->changes>0.5f*scan.t) continue;
         int best=0; for (int r=0;r<n_rpm;++r) { const int mm=scan_match(&scan.obj[rpm[r].o].f[rpm[r].k],g); if (mm>best) best=mm; }
         Cand c={m,k,best*1000+g->ups,1,best};
-        int at=n_gear<6 ? n_gear++ : 5;
-        if (at==5 && n_gear==6 && gear[5].score>=c.score) continue;
+        if (n_gear==6 && gear[5].score>=c.score) continue;
+        const int at=n_gear<6 ? n_gear++ : 5;
         gear[at]=c;
         for (int x=at;x>0 && gear[x].score>gear[x-1].score;--x) { Cand t=gear[x]; gear[x]=gear[x-1]; gear[x-1]=t; }
     }
     printf("Rig: after %.0f s of driving, %d RPM and %d gear candidates%s\n",scan.t,n_rpm,n_gear,final ? " (final)" : "");
     /* fields that move like an engine against the car's speed: a few steady levels, one a gear */
     typedef struct { int o, k, score, n; float lv[6], scale; } RCand;
-    RCand rc[8]; int n_rc=0;
+    RCand rc[8]; memset(rc,0,sizeof rc); int n_rc=0;
     for (int m=0;m<scan.n_obj;++m) for (int k=0;k<SCAN_FIELDS;++k) {
         const ScanFloat *f=&scan.obj[m].f[k]; float scale; RCand c;
         if (!f->in_range) continue;
@@ -420,8 +420,9 @@ static void scan_report(bool final) {
         for (int x=0;x<n_rc;++x) { const ScanFloat *o2=&scan.obj[rc[x].o].f[rc[x].k]; if (o2->min==f->min && o2->max==f->max) dup=true; }
         if (dup) continue;
         c.o=m; c.k=k; c.scale=scale;
-        int at=n_rc<8 ? n_rc++ : 7;
-        if (at==7 && n_rc==8 && rc[7].score>=c.score) continue;
+        /* full: only one better than the last replaces it (the last slot is never left unset) */
+        if (n_rc==8 && rc[7].score>=c.score) continue;
+        const int at=n_rc<8 ? n_rc++ : 7;
         rc[at]=c;
         for (int x=at;x>0 && rc[x].score>rc[x-1].score;--x) { RCand t=rc[x]; rc[x]=rc[x-1]; rc[x-1]=t; }
     }
