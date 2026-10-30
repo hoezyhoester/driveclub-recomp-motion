@@ -553,6 +553,26 @@ static float rig_gear_from_ratio(float engine, float speed, float dt) {
     return rig_gear.current>=0 ? (float)(rig_gear.current+1) : -1.0f;
 }
 
+/* the gears learnt so far, to the log with the status line */
+static void rig_gear_report(void) {
+    if (!scan.known || !rig_gear.n) return;
+    unsigned total=0; for (int i=0;i<rig_gear.n;++i) total+=rig_gear.hits[i];
+    const unsigned need=total/30>20 ? total/30 : 20;
+    char line[256]; int n=snprintf(line,sizeof line,"Rig: gears learnt (rpm per km/h):");
+    for (int g=0;g<rig_gear.n;++g) {
+        int idx=-1; float best=-1.0f;   /* the g-th highest counted ratio */
+        for (int i=0;i<rig_gear.n;++i) {
+            if (rig_gear.hits[i]<need) continue;
+            int rank=0; for (int j=0;j<rig_gear.n;++j) if (j!=i && rig_gear.hits[j]>=need && rig_gear.centre[j]>rig_gear.centre[i]) ++rank;
+            if (rank==g) { idx=i; best=rig_gear.centre[i]; }
+        }
+        if (idx<0) break;
+        n+=snprintf(line+n,sizeof line-n," %d: %.0f (%u samples)",g+1,best*60.0f/(2.0f*3.14159265f)/3.6f,rig_gear.hits[idx]);
+        if (n>=(int)sizeof line-24) break;
+    }
+    printf("%s\n",line);
+}
+
 /* The live RPM and gear, when known: -1 otherwise. speed (m/s) and dt for the gear from the ratio. */
 static void scan_live(float *rpm, float *gear, float speed, float dt) {
     *rpm=-1.0f; *gear=-1.0f;

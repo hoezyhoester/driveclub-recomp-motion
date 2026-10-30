@@ -671,12 +671,6 @@ kinematic:
     const float slope=flat_speed>5.0f ? atanf(rig_clamp(rig_v_dot(v,U)/flat_speed,-0.6f,0.6f)) : 0.0f;
     cam.pitch+=(slope-cam.pitch)*fminf(1.0f,dt/0.15f);
 
-    if (now-cam.report_us>30000000) {
-        cam.report_us=now;
-        printf("Rig: %.0f km/h, sway %.2f g, heave %.2f g, surge %.2f g, yaw rate %.2f, pitch %.1f deg (from the velocity)\n",
-               speed*3.6f,right/RIG_G,up/RIG_G,fwd/RIG_G,yaw_rate,cam.pitch*57.3f);
-    }
-
     uint8_t p[RIG_PACKET]={0};
     const float throttle=in->throttle, brake=in->brake, clutch=in->clutch;
     const bool inputs=in->inputs;
@@ -688,6 +682,12 @@ kinematic:
     rig_put_f(p,100,inputs ? throttle : -1.0f); rig_put_f(p,104,inputs ? brake : -1.0f);
     float rpm, gear; scan_live(&rpm,&gear,speed,dt);
     rig_put_f(p,108,steered ? steering : 0.0f); rig_put_f(p,112,rpm); rig_put_f(p,116,gear);
+    if (now-cam.report_us>30000000) {
+        cam.report_us=now;
+        printf("Rig: %.0f km/h, sway %.2f g, heave %.2f g, surge %.2f g, yaw rate %.2f, pitch %.1f deg, %.0f rpm, gear %.0f (from the velocity)\n",
+               speed*3.6f,right/RIG_G,up/RIG_G,fwd/RIG_G,yaw_rate,cam.pitch*57.3f,rpm,gear);
+        rig_gear_report();
+    }
     rig_put_f(p,120,inputs ? clutch : -1.0f);
     rig_put_f(p,128,right); rig_put_f(p,132,up); rig_put_f(p,136,fwd);
     rig_put_f(p,140,yaw_rate); rig_put_f(p,144,cam.pitch); rig_put_f(p,148,0.0f); rig_put_f(p,152,cam.yaw);
