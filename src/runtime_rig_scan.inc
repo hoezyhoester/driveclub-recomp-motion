@@ -248,6 +248,9 @@ static volatile uintptr_t rig_hud_subject_at;
  * car +0x1d8 -> +0x10, then +0x3d8, in rad/s (154..501 there: 1470..4780 rpm). +0x2ac in the same object drops at
  * upshifts too but reads down to 38 rad/s (370 rpm), below any idle: the gearbox's side, not the engine. */
 static void rig_gear_reset(void);
+#define EST_IDLE 850.0f
+#define EST_RED 7000.0f
+static struct { int gear; float rpm, top, hold; bool told; } est={1,EST_IDLE,0,0,false};
 static bool scan_known_display(uintptr_t hud) {
     rig_gear_reset();
     uint64_t a=0, b=0; float r;
@@ -310,6 +313,7 @@ static void scan_reset(uintptr_t vehicle, uintptr_t state, uintptr_t hud) {
      * the time - standing still and at the limiter alike: not the player's engine every time. Searched for now. */
     (void)scan_known_display;
     rig_gear_reset();
+    est.top=0.0f; est.gear=1;
     if (!scan.known)
         printf("Rig: looking for the engine's RPM and gear in %d objects (%s the in-game display's car); drive a few minutes with gear changes\n",
                scan.n_obj,hud ? "with" : "without");
@@ -664,9 +668,41 @@ static void rig_gear_report(void) {
 static volatile float scan_sent_rpm=-1.0f, scan_sent_gear=-1.0f;
 static void scan_peek(float *rpm, float *gear) { *rpm=scan_sent_rpm; *gear=scan_sent_gear; }
 
-/* The live RPM and gear, when known: -1 otherwise. speed (m/s) and dt for the gear from the ratio. */
-static void scan_live(float *rpm, float *gear, float speed, float dt) {
+/* Until the engine's own is found: RPM and gear worked out from the speed and the throttle, as a six-speed gearbox
+ * that shifts up near the red line under power (earlier on a light throttle) and down as the revs fall. The top
+ * gear reaches the red line at the highest speed seen (at least 200 km/h). Not the game's own numbers: for shaker
+ * effects (revs rising, a kick at each shift) and a rev counter that moves sensibly. */
+static void rig_estimate(float *rpm, float *gear, float speed, float dt, float throttle, float brake) {
+    static const float ratio[6]={3.6f,2.2f,1.55f,1.18f,0.95f,0.8f};   /* a typical six-speed, top gear last */
+    if (!est.told) { est.told=true; printf("Rig: RPM and gear estimated from the speed and the throttle (the engine's own not found yet)\n"); }
+    if (speed>est.top) est.top=speed;
+    const float top=fmaxf(est.top*1.05f,200.0f/3.6f);
+    if (!(dt>0.0f) || dt>0.5f) dt=0.0f;
+    est.hold-=dt;
+    /* the speed at the red line in gear g (1..6) */
+    #define EST_V(g) (top*ratio[5]/ratio[(g)-1])
+    float target;
+    if (speed<0.5f) { est.gear=1; target=EST_IDLE+throttle*(0.75f*EST_RED-EST_IDLE); }
+    else {
+        float r=speed/EST_V(est.gear)*EST_RED;
+        const float up_at=throttle>0.6f ? 0.93f*EST_RED : 0.6f*EST_RED;
+        if (est.hold<=0.0f && est.gear<6 && r>up_at) { ++est.gear; est.hold=0.6f; }
+        else if (est.hold<=0.0f && est.gear>1 && r<(brake>0.2f ? 0.45f : 0.3f)*EST_RED) { --est.gear; est.hold=0.6f; }
+        r=speed/EST_V(est.gear)*EST_RED;
+        /* pulling away in first: the clutch slips, the revs follow the throttle */
+        if (est.gear==1) r=fmaxf(r,EST_IDLE+throttle*0.35f*EST_RED);
+        target=fminf(fmaxf(r,EST_IDLE),EST_RED);
+    }
+    #undef EST_V
+    /* the revs move fast but not in one step (a shift settles in about a tenth of a second) */
+    est.rpm+=(target-est.rpm)*fminf(1.0f,dt/0.08f);
+    *rpm=est.rpm*rig_rpm_scale_cfg; *gear=(float)est.gear;
+}
+
+/* The live RPM and gear, when known; estimated otherwise. speed (m/s) and dt for the gear from the ratio. */
+static void scan_live(float *rpm, float *gear, float speed, float dt, float throttle, float brake) {
     *rpm=-1.0f; *gear=-1.0f;
+    if (!scan.rpm_at) { rig_estimate(rpm,gear,speed,dt,throttle,brake); scan_sent_rpm=*rpm; scan_sent_gear=*gear; return; }
     float r;
     if (scan.rpm_at && rig_read(scan.rpm_at,&r,4) && isfinite(r) && r>=0.0f) {
         *rpm=r*scan.rpm_scale*rig_rpm_scale_cfg;

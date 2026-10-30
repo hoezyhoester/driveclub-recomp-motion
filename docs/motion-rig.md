@@ -32,14 +32,12 @@ object found ...`, `Rig: motion from the car's tyres`). Until it is found, or if
 angular velocity give the g-forces, the yaw rate, the slope and impacts, with no per-wheel suspension. Which way is
 right and which way the car turns are learnt from your steering in the first corners; the log says when.
 
-**RPM and gear** are searched for while you drive, in the objects of the car the in-game display shows (its update,
-guest +0x478a20, names it) and of the car found from the camera. An engine's speed keeps a steady ratio to the car's
-within a gear and jumps to another at each shift, so its ratios gather into a few levels, one a gear; a wheel's or the
-gearbox output's gather into one, other values into none. Standing still, an engine idles. After 30 seconds of driving
-(and every 30 seconds after) the fields that do this go to the log (`Rig: engine candidate`); one that clearly stands
-out is used (`Rig: using RPM from ...`), the best after two minutes. The gear is worked out from it against the speed.
-Drive through at least three gears. (A fixed place, the display car's +0x1d8 -> +0x10 +0x3d8, read the engine on one
-drive and on the next a steady 2300 rpm whatever the car did, so it is not used.)
+**RPM and gear** are estimated from the car's speed and the throttle: a six-speed gearbox (idle 850, red line 7000
+rpm) that shifts up near the red line under power, earlier on a light throttle, and down as the revs fall; top gear
+reaches the red line at the highest speed seen (at least 200 km/h). They are not the game's own numbers - a search for
+those found only other cars' engines and switches - but they rise with the speed and drop at each shift, which is what
+shaker effects (a ButtKicker in Sim Racing Studio or SimHub) use. `motion_rpm_scale` scales them. `BB_MOTION_RPM_SEARCH=1`
+runs the search and its twice-a-second trace instead, for finding the real ones.
 
 **Tyre slip** (wheelspin, locking brakes) is sent per wheel whenever the tyres are; SpaceMonkey turns it into each
 wheel's speed, which shaker software (Sim Racing Studio, SimHub) uses for wheelspin and ABS effects.

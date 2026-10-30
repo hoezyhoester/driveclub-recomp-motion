@@ -384,8 +384,12 @@ static void *rig_idle_thread(void *arg) {
         static bool was_moving;
         if (was_moving && !moving) scan_stopped();
         was_moving=moving;
-        if (moving && vehicle && dt>0.0f && dt<0.5f) scan_sample(vehicle,state,speed,throttle,dt);
-        if (dt>0.0f && dt<0.5f) rig_trace(moving ? speed : 0.0f,dt);
+        /* the search for the engine's own RPM found only other cars' engines and switches on DriveClub 1.28: the
+         * RPM is estimated (rig_estimate) unless BB_MOTION_RPM_SEARCH=1 asks for the search and its trace */
+        static int search_rpm=-1;
+        if (search_rpm<0) { const char *e=getenv("BB_MOTION_RPM_SEARCH"); search_rpm=e && atoi(e)>0; }
+        if (search_rpm && moving && vehicle && dt>0.0f && dt<0.5f) scan_sample(vehicle,state,speed,throttle,dt);
+        if (search_rpm && dt>0.0f && dt<0.5f) rig_trace(moving ? speed : 0.0f,dt);
     }
     return NULL;
 }
@@ -578,7 +582,7 @@ static void rig_physics_locked(const float *st, const uint8_t *block, const RigI
     rig_put_d(p,72,-sy*sp); rig_put_d(p,80,cp); rig_put_d(p,88,-cy*sp);
     rig_put_f(p,96,speed);
     rig_put_f(p,100,inputs ? throttle : -1.0f); rig_put_f(p,104,inputs ? brake : -1.0f);
-    float rpm, gear; scan_live(&rpm,&gear,speed,dt);
+    float rpm, gear; scan_live(&rpm,&gear,speed,dt,inputs ? throttle : 0.0f,inputs ? brake : 0.0f);
     rig_put_f(p,108,steering); rig_put_f(p,112,rpm); rig_put_f(p,116,gear);
     rig_put_f(p,120,inputs ? clutch : -1.0f);
     rig_put_f(p,128,right); rig_put_f(p,132,up); rig_put_f(p,136,rig.surge);
@@ -713,7 +717,7 @@ kinematic:
     rig_put_d(p,72,-sy*sp); rig_put_d(p,80,cp); rig_put_d(p,88,-cy*sp);
     rig_put_f(p,96,speed);
     rig_put_f(p,100,inputs ? throttle : -1.0f); rig_put_f(p,104,inputs ? brake : -1.0f);
-    float rpm, gear; scan_live(&rpm,&gear,speed,dt);
+    float rpm, gear; scan_live(&rpm,&gear,speed,dt,inputs ? throttle : 0.0f,inputs ? brake : 0.0f);
     rig_put_f(p,108,steered ? steering : 0.0f); rig_put_f(p,112,rpm); rig_put_f(p,116,gear);
     if (now-cam.report_us>30000000) {
         cam.report_us=now;
