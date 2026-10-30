@@ -194,14 +194,15 @@ static uintptr_t rig_tyre_test_sample(float kin_right, bool *done, char *how, si
 
 /* ---- 2. RPM and gear ------------------------------------------------------------------------------------- */
 
-#define SCAN_OBJECTS 64
+#define SCAN_OBJECTS 400
 #define SCAN_BYTES 0x800
 #define SCAN_FIELDS (SCAN_BYTES/4)
 #define SCAN_HISTORY 4        /* samples back the drop is measured over (0.2 s at 20 Hz) */
-#define SCAN_EVENTS 24
+#define SCAN_EVENTS 10
 
 typedef struct {
     float min, max, hist[SCAN_HISTORY];
+    float still_min, still_max;   /* while the car stands still: an engine idles there */
     uint16_t drops, n_events;
     float event_t[SCAN_EVENTS];   /* drop times (s) */
     bool in_range;
@@ -209,7 +210,6 @@ typedef struct {
 typedef struct {
     int32_t last; int16_t lo, hi; uint16_t ups, changes; bool ok;
     float up_t[SCAN_EVENTS]; uint16_t n_up;
-    uint32_t seen;               /* the values seen, as bits -1..30 */
 } ScanInt;
 typedef struct {
     uintptr_t address; char label[48];
@@ -247,35 +247,40 @@ static void scan_reset(uintptr_t vehicle, uintptr_t state, uintptr_t hud) {
     scan.reports=0; scan.next_report=30.0f;
     { const char *e=getenv("BB_MOTION_SCAN_FIRST"); if (e && atof(e)>0) scan.next_report=(float)atof(e); }   /* tests */
     scan.rpm_at=0; scan.gear_at=0; scan.rpm_max_seen=0; scan.known=false;
-    /* the objects, the display's first: its car and that car's +0x10 (the data the display reads), then the car
-     * found from the camera and its state, and what each of them points to */
-    uint64_t hud_data=0;
-    if (hud) rig_read(hud+0x10,&hud_data,8);
-    if (!rig_pointer(hud_data)) hud_data=0;
-    const uintptr_t roots[5]={(uintptr_t)hud_data,hud,vehicle,state,0};
-    const char *names[4]={"display data","display car","vehicle","state"};
-    const int spans[4]={0x400,0x400,0x1000,0x100};
-    for (int r=0;r<4 && scan.n_obj<SCAN_OBJECTS;++r) {
-        if (!roots[r]) continue;
-        bool dup=false; for (int m=0;m<scan.n_obj;++m) if (scan.obj[m].address==roots[r]) dup=true;
-        if (dup) continue;
-        ScanObject *o=&scan.obj[scan.n_obj++]; o->address=roots[r]; snprintf(o->label,sizeof o->label,"%s",names[r]);
+    /* the objects: breadth first from the display's car and from the car found from the camera (and its state),
+     * two levels deep (0x1000 bytes of each root, 0x400 below, 0x200 below that), the nearest SCAN_OBJECTS */
+    const uintptr_t roots[3]={hud,vehicle,state};
+    const char *names[3]={"display car","vehicle","state"};
+    static struct { uintptr_t at; int depth; char label[48]; } q[4096];
+    static uintptr_t seen[8192];
+    memset(seen,0,sizeof seen);
+    int head=0, tail=0;
+    for (int r=0;r<3;++r) {
+        if (!roots[r] || seen[(roots[r]>>3)&8191]==roots[r]) continue;
+        seen[(roots[r]>>3)&8191]=roots[r];
+        q[tail].at=roots[r]; q[tail].depth=0; snprintf(q[tail].label,sizeof q[tail].label,"%s",names[r]); ++tail;
     }
-    for (int r=0;r<4;++r) {
-        if (!roots[r]) continue;
-        static uint64_t ptrs[0x1000/8]; const int n=spans[r]/8;
-        if (!rig_read(roots[r],ptrs,n*8)) continue;
-        for (int k=0;k<n && scan.n_obj<SCAN_OBJECTS;++k) {
-            if (!rig_pointer(ptrs[k])) continue;
-            bool dup=false; for (int m=0;m<scan.n_obj;++m) if (scan.obj[m].address==ptrs[k]) dup=true;
-            static uint8_t probe[SCAN_BYTES];
-            if (dup || !rig_read(ptrs[k],probe,sizeof probe)) continue;
-            ScanObject *o=&scan.obj[scan.n_obj++]; o->address=(uintptr_t)ptrs[k];
-            snprintf(o->label,sizeof o->label,"%s+0x%x ->",names[r],k*8);
+    static uint64_t ptrs[0x1000/8];
+    static uint8_t probe[SCAN_BYTES];
+    while (head<tail && scan.n_obj<SCAN_OBJECTS) {
+        const uintptr_t at=q[head].at; const int depth=q[head].depth; char label[48]; snprintf(label,sizeof label,"%s",q[head].label); ++head;
+        if (!rig_read(at,probe,sizeof probe)) continue;
+        ScanObject *o=&scan.obj[scan.n_obj++]; o->address=at; snprintf(o->label,sizeof o->label,"%s",label);
+        if (depth>=2) continue;
+        const size_t span=depth==0 ? 0x1000 : 0x400;
+        if (!rig_read(at,ptrs,span)) continue;
+        for (size_t k=0;k<span/8 && tail<4096;++k) {
+            const uint64_t p=ptrs[k];
+            if (!rig_pointer(p) || seen[(p>>3)&8191]==p) continue;
+            seen[(p>>3)&8191]=p;
+            q[tail].at=(uintptr_t)p; q[tail].depth=depth+1;
+            snprintf(q[tail].label,sizeof q[tail].label,"%.30s->+0x%x",label,(unsigned)(k*8));
+            ++tail;
         }
     }
     for (int m=0;m<scan.n_obj;++m) for (int k=0;k<SCAN_FIELDS;++k) {
         scan.obj[m].f[k].in_range=true; scan.obj[m].f[k].min=1e30f; scan.obj[m].f[k].max=-1e30f;
+        scan.obj[m].f[k].still_min=1e30f; scan.obj[m].f[k].still_max=-1e30f;
         scan.obj[m].i[k].ok=true; scan.obj[m].i[k].lo=32767; scan.obj[m].i[k].hi=-32768;
     }
     printf("Rig: looking for the engine's RPM and gear in %d objects (%s the in-game display's car); drive a few minutes with gear changes\n",
@@ -303,7 +308,7 @@ static int scan_match(const ScanFloat *f, const ScanInt *g) {
 
 static void scan_report(bool final) {
     typedef struct { int o, k; int score; float scale; int matched; } Cand;
-    Cand rpm[6]={{0}}; int n_rpm=0;
+    Cand rpm[10]={{0}}; int n_rpm=0;
     for (int m=0;m<scan.n_obj;++m) for (int k=0;k<SCAN_FIELDS;++k) {
         const ScanFloat *f=&scan.obj[m].f[k]; float scale;
         if (!f->in_range || f->drops<3 || !scan_rpm_range(f->min,f->max,&scale)) continue;
@@ -311,9 +316,15 @@ static void scan_report(bool final) {
         for (int x=0;x<n_rpm;++x) { const ScanFloat *o2=&scan.obj[rpm[x].o].f[rpm[x].k];
             if (o2->min==f->min && o2->max==f->max && o2->drops==f->drops) dup=true; }
         if (dup) continue;
-        Cand c={m,k,f->drops,scale,0};
-        int at=n_rpm<6 ? n_rpm++ : 5;
-        if (at==5 && n_rpm==6 && rpm[5].score>=c.score) continue;
+        /* standing still, an engine idles: above zero and well below the top (when the car stood still at all) */
+        int score=f->drops*10;
+        if (f->still_max>=f->still_min) {
+            const bool idles=f->still_min>0.0f && f->still_max<=0.45f*f->max;
+            score+=idles ? 50 : -50;
+        }
+        Cand c={m,k,score,scale,0};
+        int at=n_rpm<10 ? n_rpm++ : 9;
+        if (at==9 && n_rpm==10 && rpm[9].score>=c.score) continue;
         rpm[at]=c;
         for (int x=at;x>0 && rpm[x].score>rpm[x-1].score;--x) { Cand t=rpm[x]; rpm[x]=rpm[x-1]; rpm[x-1]=t; }
     }
@@ -333,8 +344,10 @@ static void scan_report(bool final) {
     printf("Rig: after %.0f s of driving, %d RPM and %d gear candidates%s\n",scan.t,n_rpm,n_gear,final ? " (final)" : "");
     for (int r=0;r<n_rpm;++r) {
         const ScanObject *o=&scan.obj[rpm[r].o]; const ScanFloat *f=&o->f[rpm[r].k];
-        printf("Rig: RPM candidate %d: %s +0x%x, %.3g..%.3g%s, %u drops\n",r+1,o->label,rpm[r].k*4,f->min,f->max,
-               rpm[r].scale==1.0f ? " rpm" : rpm[r].scale==1000.0f ? " (thousands)" : rpm[r].scale==8000.0f ? " (share of the dial)" : " rad/s",(unsigned)f->drops);
+        char still[48]="not seen standing still";
+        if (f->still_max>=f->still_min) snprintf(still,sizeof still,"%.3g..%.3g standing still",f->still_min,f->still_max);
+        printf("Rig: RPM candidate %d: %s +0x%x, %.3g..%.3g%s, %u drops, %s\n",r+1,o->label,rpm[r].k*4,f->min,f->max,
+               rpm[r].scale==1.0f ? " rpm" : rpm[r].scale==1000.0f ? " (thousands)" : rpm[r].scale==8000.0f ? " (share of the dial)" : " rad/s",(unsigned)f->drops,still);
     }
     for (int r=0;r<n_gear;++r) {
         const ScanObject *o=&scan.obj[gear[r].o]; const ScanInt *g=&o->i[gear[r].k];
@@ -342,7 +355,7 @@ static void scan_report(bool final) {
                (int)g->lo,(int)g->hi,(unsigned)g->ups,gear[r].matched);
     }
     /* one that stands out is used now: twice the drops of the next, or the only one; a gear only at those drops */
-    if (n_rpm>0 && rpm[0].score>=5 && (n_rpm==1 || rpm[0].score>=2*rpm[1].score)) {
+    if (n_rpm>0 && scan.obj[rpm[0].o].f[rpm[0].k].drops>=5 && (n_rpm==1 || rpm[0].score>=2*rpm[1].score || rpm[0].score-rpm[1].score>=60)) {
         const ScanObject *o=&scan.obj[rpm[0].o];
         scan.rpm_at=o->address+rpm[0].k*4; scan.rpm_scale=rpm[0].scale;
         snprintf(scan.rpm_label,sizeof scan.rpm_label,"%s +0x%x",o->label,rpm[0].k*4);
@@ -359,6 +372,9 @@ static void scan_report(bool final) {
 /* For finding the engine's fields by eye: every two seconds for the first two minutes of a car, the speed, the
  * throttle and the object at the car's +0x540, around where its engine speed and gear were found, to the log. */
 static void scan_check(uintptr_t vehicle, float speed, float throttle, float dt) {
+    /* the display's data turned out a fixed copy (a manual Mercedes, 0..199 km/h: not one field moved); the
+     * candidates' own lines say more now */
+    if (getenv("BB_MOTION_ENGINE_CHECK")==NULL) { (void)vehicle; (void)speed; (void)throttle; (void)dt; return; }
     static uintptr_t last;
     const uintptr_t hud=rig_hud_subject_at;
     if (hud!=last) { last=hud; scan.check_s=0; scan.check_next=0; }
@@ -400,7 +416,23 @@ static void scan_sample(uintptr_t vehicle, uintptr_t state, float speed, float t
         scan.known=false; scan.rpm_at=scan.gear_at=0;
     }
     const bool driving=speed>3.0f;
-    if (!driving) return;
+    if (!driving) {
+        /* standing still: what each field reads then (an engine idles; most other things read 0 or stay) */
+        if (speed<0.5f) {
+            static uint8_t sbuf[SCAN_BYTES];
+            for (int m=0;m<scan.n_obj;++m) {
+                if (!rig_read(scan.obj[m].address,sbuf,sizeof sbuf)) continue;
+                const float *fv=(const float *)sbuf;
+                for (int k=0;k<SCAN_FIELDS;++k) {
+                    ScanFloat *f=&scan.obj[m].f[k];
+                    if (!f->in_range || !isfinite(fv[k])) continue;
+                    if (fv[k]<f->still_min) f->still_min=fv[k];
+                    if (fv[k]>f->still_max) f->still_max=fv[k];
+                }
+            }
+        }
+        return;
+    }
     scan.t+=dt;
     const unsigned back=(scan.hist_pos+1)%SCAN_HISTORY;     /* the oldest sample */
     const float speed_then=scan.samples>=SCAN_HISTORY ? scan.speed_hist[back] : speed;
