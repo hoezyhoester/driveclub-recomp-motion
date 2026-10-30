@@ -282,7 +282,11 @@ static void rig_trace(float speed, float dt) {
     static float t, next; static unsigned lines; static uintptr_t hud_was;
     const uintptr_t hud=rig_hud_subject_at;
     if (!hud) return;
-    if (hud!=hud_was) { hud_was=hud; t=0; next=0; lines=0; }
+    if (hud!=hud_was) {   /* a car other than the player's would show here as a change */
+        static unsigned changes;
+        if (changes++<20) printf("Rig: trace: the display's car is now %llx\n",(unsigned long long)hud);
+        hud_was=hud; if (lines>=600) { t=0; next=0; lines=0; }
+    }
     t+=dt;
     if (t<next || lines>=600) return;
     next=t+0.5f; ++lines;
@@ -299,8 +303,9 @@ static void rig_trace(float speed, float dt) {
     const RigInputs in=rig_inputs();
     float rpm, gear; scan_peek(&rpm,&gear);
     const float k=60.0f/(2.0f*3.14159265f);
-    printf("Rig: trace %5.1f s %3.0f km/h thr %.2f brk %.2f clu %.2f | +3d8 %5.0f rpm +2ac %5.0f rpm | sent %5.0f rpm gear %2.0f | ints %d %d %d %d\n",
-           t,speed*3.6f,in.throttle,in.brake,in.clutch,f3d8*k,f2ac*k,rpm,gear,g10_48,g128_28,g128_68,g128_46c);
+    printf("Rig: trace %5.1f s %3.0f km/h thr %.2f brk %.2f clu %.2f | +3d8 %5.0f rpm +2ac %5.0f rpm | sent %5.0f rpm gear %2.0f | ints %d %d %d %d | car %llx data %llx\n",
+           t,speed*3.6f,in.throttle,in.brake,in.clutch,f3d8*k,f2ac*k,rpm,gear,g10_48,g128_28,g128_68,g128_46c,
+           (unsigned long long)hud,(unsigned long long)b);
 }
 
 static void *rig_idle_thread(void *arg) {
