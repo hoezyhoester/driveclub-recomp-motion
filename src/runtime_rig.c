@@ -545,7 +545,7 @@ static void rig_physics_locked(const float *st, const uint8_t *block, const RigI
     rig_put_d(p,72,-sy*sp); rig_put_d(p,80,cp); rig_put_d(p,88,-cy*sp);
     rig_put_f(p,96,speed);
     rig_put_f(p,100,inputs ? throttle : -1.0f); rig_put_f(p,104,inputs ? brake : -1.0f);
-    float rpm, gear; scan_live(&rpm,&gear);
+    float rpm, gear; scan_live(&rpm,&gear,speed,dt);
     rig_put_f(p,108,steering); rig_put_f(p,112,rpm); rig_put_f(p,116,gear);
     rig_put_f(p,120,inputs ? clutch : -1.0f);
     rig_put_f(p,128,right); rig_put_f(p,132,up); rig_put_f(p,136,rig.surge);
@@ -686,7 +686,7 @@ kinematic:
     rig_put_d(p,72,-sy*sp); rig_put_d(p,80,cp); rig_put_d(p,88,-cy*sp);
     rig_put_f(p,96,speed);
     rig_put_f(p,100,inputs ? throttle : -1.0f); rig_put_f(p,104,inputs ? brake : -1.0f);
-    float rpm, gear; scan_live(&rpm,&gear);
+    float rpm, gear; scan_live(&rpm,&gear,speed,dt);
     rig_put_f(p,108,steered ? steering : 0.0f); rig_put_f(p,112,rpm); rig_put_f(p,116,gear);
     rig_put_f(p,120,inputs ? clutch : -1.0f);
     rig_put_f(p,128,right); rig_put_f(p,132,up); rig_put_f(p,136,fwd);

@@ -72,10 +72,11 @@ Met een stuur komen de krachten rechtstreeks uit de banden. Met een controller z
 de banden van je auto zelf op; in het log staat dan "Rig: motion from the car's tyres". Lukt dat
 niet, dan komen de krachten uit de snelheid van de auto (zonder vering per wiel).
 
-Het toerental (RPM) en de versnelling worden gezocht terwijl je rijdt, in de gegevens achter de
-toerenteller van het spel. Rij een minuut of meer en schakel een paar keer op. Gevonden? Dan staat
-in SpaceMonkey bij "engine" een toerental en een versnelling, en in het log "Rig: using RPM from ...".
-Daarmee werken ook toerental- en schakel-effecten op shakers zoals een ButtKicker.
+Het toerental (RPM) komt uit de gegevens achter de toerenteller van het spel; in het log staat dan
+"Rig: RPM from its known place". De versnelling rekent het spel uit het toerental en de snelheid: elke
+versnelling heeft zijn eigen verhouding daartussen. Rij dus eerst een paar minuten en gebruik elke
+versnelling een paar seconden; daarna klopt het nummer. In SpaceMonkey staat bij "engine" het toerental
+en de versnelling. Daarmee werken ook toerental- en schakel-effecten op shakers zoals een ButtKicker.
 Klopt het toerental niet met de toerenteller in het spel? Zet dan in default.ini een factor:
   motion_rpm_scale = 1.0     (2.0 = twee keer zo hoog)
 

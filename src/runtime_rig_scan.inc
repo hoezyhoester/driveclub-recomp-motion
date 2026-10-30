@@ -228,6 +228,7 @@ static struct {
     uintptr_t rpm_at; float rpm_scale; uintptr_t gear_at; int gear_type;   /* 0 int32, 2 int32 less one */
     bool known;                  /* the places found on DriveClub 1.28: no search */
     float still_s;               /* how long the car has stood still */
+    float frozen_s, frozen_val, frozen_speed;   /* a known place that stops moving while the car does: not live */
     float check_s, check_next;   /* the engine check lines: driving time, when the next is due */
     char rpm_label[64], gear_label[64];
     float rpm_max_seen;
@@ -238,6 +239,24 @@ static float rig_rpm_scale_cfg=1.0f;
 
 /* The in-game display's car (its rev counter and gear come from it), from the display's update (runtime_rig.c). */
 static volatile uintptr_t rig_hud_subject_at;
+
+/* Where the engine's speed is, found by the search on a manual Mercedes (11 drops at 11 upshifts): the display's
+ * car +0x1d8 -> +0x10, then +0x3d8, in rad/s (154..501 there: 1470..4780 rpm). +0x2ac in the same object drops at
+ * upshifts too but reads down to 38 rad/s (370 rpm), below any idle: the gearbox's side, not the engine. */
+static void rig_gear_reset(void);
+static bool scan_known_display(uintptr_t hud) {
+    rig_gear_reset();
+    uint64_t a=0, b=0; float r;
+    if (!hud || !rig_read(hud+0x1d8,&a,8) || !rig_pointer(a) || !rig_read(a+0x10,&b,8) || !rig_pointer(b)) return false;
+    if (!rig_read(b+0x3d8,&r,4) || !isfinite(r) || r<0.0f || r>2000.0f) return false;
+    scan.rpm_at=(uintptr_t)b+0x3d8; scan.rpm_scale=60.0f/(2.0f*3.14159265f);
+    scan.gear_at=0;   /* the gear: from the engine's speed against the car's (rig_gear_from_ratio) */
+    snprintf(scan.rpm_label,sizeof scan.rpm_label,"display car +0x1d8 -> +0x10 +0x3d8");
+    scan.frozen_s=0; scan.frozen_val=r; scan.frozen_speed=-1.0f;
+    printf("Rig: RPM from its known place (%s): now %.0f rpm; the gear is worked out from RPM against speed\n",
+           scan.rpm_label,r*scan.rpm_scale);
+    return true;
+}
 
 static void scan_reset(uintptr_t vehicle, uintptr_t state, uintptr_t hud) {
     if (!scan.obj) scan.obj=calloc(SCAN_OBJECTS,sizeof(ScanObject));
@@ -283,8 +302,10 @@ static void scan_reset(uintptr_t vehicle, uintptr_t state, uintptr_t hud) {
         scan.obj[m].f[k].still_min=1e30f; scan.obj[m].f[k].still_max=-1e30f;
         scan.obj[m].i[k].ok=true; scan.obj[m].i[k].lo=32767; scan.obj[m].i[k].hi=-32768;
     }
-    printf("Rig: looking for the engine's RPM and gear in %d objects (%s the in-game display's car); drive a few minutes with gear changes\n",
-           scan.n_obj,hud ? "with" : "without");
+    scan.known=scan_known_display(hud);
+    if (!scan.known)
+        printf("Rig: looking for the engine's RPM and gear in %d objects (%s the in-game display's car); drive a few minutes with gear changes\n",
+               scan.n_obj,hud ? "with" : "without");
 }
 
 /* a field's value as RPM: rpm itself (300..16000), rad/s (30..1700), thousands, or a share of the dial */
@@ -405,13 +426,15 @@ static void scan_sample(uintptr_t vehicle, uintptr_t state, float speed, float t
     if (vehicle!=scan.vehicle || state!=scan.state || hud!=scan.hud) scan_reset(vehicle,state,hud);
     if (!scan.obj || !scan.n_obj) return;
     scan_check(vehicle,speed,throttle,dt);
-    if (scan.known) {   /* still there? (a stale pointer reads nothing, or nonsense) */
+    if (scan.known) {   /* still there, and still moving with the car? */
         float r;
         if (rig_read(scan.rpm_at,&r,4) && isfinite(r) && r>=0.0f && r<2000.0f) {
-            /* a car standing still idles: an engine speed well past idle there is not the engine's */
-            if (speed<1.0f) scan.still_s+=dt; else scan.still_s=0.0f;
-            if (scan.still_s<2.0f || r<90.0f) return;
-            printf("Rig: the known RPM place reads %.0f with the car standing still - not the engine; searching instead\n",r);
+            if (r!=scan.frozen_val) { scan.frozen_val=r; scan.frozen_s=0; scan.frozen_speed=speed; return; }
+            if (scan.frozen_speed<0.0f) scan.frozen_speed=speed;
+            scan.frozen_s+=dt;
+            /* the same value to the bit for ten seconds while the speed changed by 10 m/s: not the engine */
+            if (scan.frozen_s<10.0f || fabsf(speed-scan.frozen_speed)<10.0f) return;
+            printf("Rig: the known RPM place stopped moving with the car; searching instead\n");
         } else printf("Rig: the known RPM place stopped reading right; searching instead\n");
         scan.known=false; scan.rpm_at=scan.gear_at=0;
     }
@@ -492,13 +515,52 @@ static void scan_stopped(void) {
     }
 }
 
-/* The live RPM and gear, when known: -1 otherwise. */
-static void scan_live(float *rpm, float *gear) {
+/* The gear from the engine's speed against the car's: each gear keeps its own ratio between them, so the ratios
+ * seen while driving gather into a few groups, one a gear - the highest ratio first gear. A group counts once seen
+ * for a while (clutch slip and wheelspin pass); the gear changes once the new one holds for a few samples. */
+#define RIG_GEARS 10
+static struct {
+    float centre[RIG_GEARS]; unsigned hits[RIG_GEARS]; float last_s[RIG_GEARS]; int n;
+    int current, pending, pending_n; float t;
+} rig_gear;
+static void rig_gear_reset(void) { memset(&rig_gear,0,sizeof rig_gear); rig_gear.current=-1; rig_gear.pending=-1; }
+static float rig_gear_from_ratio(float engine, float speed, float dt) {
+    rig_gear.t+=dt;
+    if (!(engine>0.0f) || speed<4.0f) return rig_gear.current>=0 ? (float)(rig_gear.current+1) : -1.0f;
+    const float ratio=engine/speed;
+    int best=-1; float best_d=1e9f;
+    for (int i=0;i<rig_gear.n;++i) { const float d=fabsf(ratio-rig_gear.centre[i])/rig_gear.centre[i]; if (d<best_d) { best_d=d; best=i; } }
+    if (best>=0 && best_d<0.05f) {
+        rig_gear.centre[best]+=(ratio-rig_gear.centre[best])*0.02f;
+        ++rig_gear.hits[best]; rig_gear.last_s[best]=rig_gear.t;
+    } else {
+        /* a new group, or the oldest little-used one replaced */
+        int at=rig_gear.n<RIG_GEARS ? rig_gear.n++ : -1;
+        if (at<0) { unsigned least=~0u; for (int i=0;i<RIG_GEARS;++i) if (rig_gear.hits[i]<least) { least=rig_gear.hits[i]; at=i; } }
+        rig_gear.centre[at]=ratio; rig_gear.hits[at]=1; rig_gear.last_s[at]=rig_gear.t;
+        best=at;
+    }
+    /* groups that count: seen at least 20 times (a second) and a fair share of the drive - a clutch slipping or a
+     * wheel spinning for a moment makes a group too, but a small one */
+    unsigned total=0; for (int i=0;i<rig_gear.n;++i) total+=rig_gear.hits[i];
+    const unsigned need=total/30>20 ? total/30 : 20;
+    if (rig_gear.hits[best]<need) return rig_gear.current>=0 ? (float)(rig_gear.current+1) : -1.0f;
+    int rank=0;
+    for (int i=0;i<rig_gear.n;++i) if (i!=best && rig_gear.hits[i]>=need && rig_gear.centre[i]>rig_gear.centre[best]) ++rank;
+    if (rank==rig_gear.current) { rig_gear.pending_n=0; return (float)(rank+1); }
+    if (rank==rig_gear.pending) { if (++rig_gear.pending_n>=8) { rig_gear.current=rank; rig_gear.pending_n=0; } }
+    else { rig_gear.pending=rank; rig_gear.pending_n=1; }
+    return rig_gear.current>=0 ? (float)(rig_gear.current+1) : -1.0f;
+}
+
+/* The live RPM and gear, when known: -1 otherwise. speed (m/s) and dt for the gear from the ratio. */
+static void scan_live(float *rpm, float *gear, float speed, float dt) {
     *rpm=-1.0f; *gear=-1.0f;
     float r;
     if (scan.rpm_at && rig_read(scan.rpm_at,&r,4) && isfinite(r) && r>=0.0f) {
         *rpm=r*scan.rpm_scale*rig_rpm_scale_cfg;
         if (*rpm>scan.rpm_max_seen) scan.rpm_max_seen=*rpm;
+        if (!scan.gear_at) *gear=rig_gear_from_ratio(r,speed,dt);
     }
     int32_t g;
     if (scan.gear_at && rig_read(scan.gear_at,&g,4) && g>=-1 && g<=12) {

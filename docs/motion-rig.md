@@ -32,12 +32,12 @@ object found ...`, `Rig: motion from the car's tyres`). Until it is found, or if
 angular velocity give the g-forces, the yaw rate, the slope and impacts, with no per-wheel suspension. Which way is
 right and which way the car turns are learnt from your steering in the first corners; the log says when.
 
-**RPM and gear** are looked for while you drive, first in the data of the car the in-game display (rev counter,
-gear) shows - its update, guest +0x478a20, names that car - then in the car's own objects: fields that rise with the
-car's speed and drop at each
-upshift, and a small whole number that steps up at those drops. After 90 seconds of driving (and every two minutes
-after) the best candidates go to the log (`Rig: RPM candidate`, `Rig: gear candidate`); one that clearly stands out
-is used straight away (`Rig: using RPM from ...`). Drive with gear changes - the automatic gearbox is fine.
+**RPM and gear**: the engine's speed is read from the data of the car the in-game display (rev counter, gear)
+shows - its update, guest +0x478a20, names that car - at +0x1d8 -> +0x10 -> +0x3d8, in rad/s (`Rig: RPM from its
+known place`). The gear is worked out from it against the car's speed: each gear keeps its own ratio between the two,
+so the ratios seen while driving gather into groups, the highest first gear. It is known once each gear has been
+used for a few seconds. If the known place stops moving with the car, the game looks for the RPM instead: fields that
+rise with the speed and drop at each upshift (`Rig: RPM candidate`, `Rig: using RPM from ...`).
 
 **Tyre slip** (wheelspin, locking brakes) is sent per wheel whenever the tyres are; SpaceMonkey turns it into each
 wheel's speed, which shaker software (Sim Racing Studio, SimHub) uses for wheelspin and ABS effects.
