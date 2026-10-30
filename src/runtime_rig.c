@@ -276,6 +276,33 @@ static void rig_send_idle(uint64_t now) {
     for (size_t at=100;at<=116;at+=4) rig_put_f(p,at,-1.0f);
     rig_send(p,sizeof p);
 }
+/* Twice a second for the first five minutes in a car: what the engine fields read next to the speed and the pedals,
+ * standing still included, to line up with the rev counter (lines "Rig: trace"). Read without rig_m held. */
+static void rig_trace(float speed, float dt) {
+    static float t, next; static unsigned lines; static uintptr_t hud_was;
+    const uintptr_t hud=rig_hud_subject_at;
+    if (!hud) return;
+    if (hud!=hud_was) { hud_was=hud; t=0; next=0; lines=0; }
+    t+=dt;
+    if (t<next || lines>=600) return;
+    next=t+0.5f; ++lines;
+    uint64_t a=0, b=0, c=0;
+    float f3d8=-1, f2ac=-1; int32_t g10_48=-99, g128_28=-99, g128_68=-99, g128_46c=-99;
+    if (rig_read(hud+0x1d8,&a,8) && rig_pointer(a)) {
+        if (rig_read(a+0x10,&b,8) && rig_pointer(b)) {
+            rig_read(b+0x3d8,&f3d8,4); rig_read(b+0x2ac,&f2ac,4); rig_read(b+0x48,&g10_48,4);
+        }
+        if (rig_read(a+0x128,&c,8) && rig_pointer(c)) {
+            rig_read(c+0x28,&g128_28,4); rig_read(c+0x68,&g128_68,4); rig_read(c+0x46c,&g128_46c,4);
+        }
+    }
+    const RigInputs in=rig_inputs();
+    float rpm, gear; scan_peek(&rpm,&gear);
+    const float k=60.0f/(2.0f*3.14159265f);
+    printf("Rig: trace %5.1f s %3.0f km/h thr %.2f brk %.2f clu %.2f | +3d8 %5.0f rpm +2ac %5.0f rpm | sent %5.0f rpm gear %2.0f | ints %d %d %d %d\n",
+           t,speed*3.6f,in.throttle,in.brake,in.clutch,f3d8*k,f2ac*k,rpm,gear,g10_48,g128_28,g128_68,g128_46c);
+}
+
 static void *rig_idle_thread(void *arg) {
     (void)arg;
     uint64_t last=rig_now_us();
@@ -353,6 +380,7 @@ static void *rig_idle_thread(void *arg) {
         if (was_moving && !moving) scan_stopped();
         was_moving=moving;
         if (moving && vehicle && dt>0.0f && dt<0.5f) scan_sample(vehicle,state,speed,throttle,dt);
+        if (dt>0.0f && dt<0.5f) rig_trace(moving ? speed : 0.0f,dt);
     }
     return NULL;
 }

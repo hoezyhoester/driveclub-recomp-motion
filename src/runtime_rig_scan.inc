@@ -573,6 +573,10 @@ static void rig_gear_report(void) {
     printf("%s\n",line);
 }
 
+/* what was sent last, for the trace */
+static volatile float scan_sent_rpm=-1.0f, scan_sent_gear=-1.0f;
+static void scan_peek(float *rpm, float *gear) { *rpm=scan_sent_rpm; *gear=scan_sent_gear; }
+
 /* The live RPM and gear, when known: -1 otherwise. speed (m/s) and dt for the gear from the ratio. */
 static void scan_live(float *rpm, float *gear, float speed, float dt) {
     *rpm=-1.0f; *gear=-1.0f;
@@ -587,4 +591,5 @@ static void scan_live(float *rpm, float *gear, float speed, float dt) {
         if (scan.gear_type==2) g-=1;   /* reverse -1, neutral 0, first 1 */
         *gear=(float)g;
     }
+    scan_sent_rpm=*rpm; scan_sent_gear=*gear;
 }
