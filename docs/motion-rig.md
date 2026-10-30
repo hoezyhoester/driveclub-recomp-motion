@@ -36,8 +36,9 @@ right and which way the car turns are learnt from your steering in the first cor
 rpm) that shifts up near the red line under power, earlier on a light throttle, and down as the revs fall; top gear
 reaches the red line at the highest speed seen (at least 200 km/h). They are not the game's own numbers - a search for
 those found only other cars' engines and switches - but they rise with the speed and drop at each shift, which is what
-shaker effects (a ButtKicker in Sim Racing Studio or SimHub) use. With a manual gearbox on a pad the gear follows the shift buttons
-(Triangle up, Square down; counted from first gear at each race's start), and the revs are worked out in that gear,
+shaker effects (a ButtKicker in Sim Racing Studio or SimHub) use. With a manual gearbox the gear follows the player's shifts: a pad's
+Triangle (up) and Square (down), a wheel's paddles (R1 up, L1 down, as Wheel Setup maps them) - counted from first gear
+at each race's start - or an H-pattern shifter's gear as it stands (neutral 0, reverse -1), and the revs are worked out in that gear,
 each gear's speed at the red line learnt when the car goes past the model's. `motion_rpm_scale` scales them. `BB_MOTION_RPM_SEARCH=1`
 runs the search and its twice-a-second trace instead, for finding the real ones.
 

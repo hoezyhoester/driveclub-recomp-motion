@@ -100,6 +100,20 @@ static void touch_click(PadData *d, int right) {
 static PadData pad_last_read;   /* the last read of any port, under lock */
 static bool pad_was_read;
 static unsigned pad_shift_up, pad_shift_down;
+/* The H-pattern shifter's gear, for the motion rig: 1 with *gear set (-1 reverse, 0 neutral, 1..6) when a shifter is
+ * set up and the wheel was read, 0 otherwise. */
+int runtime_pad_shifter(int *gear);
+int runtime_pad_shifter(int *gear) {
+    pthread_mutex_lock(&lock);
+    WheelExtension w; memcpy(&w,wheel_last_read.extension,sizeof w);
+    const bool has=shifter_gear_count>0;
+    pthread_mutex_unlock(&lock);
+    if (!has || w.magic!=WHEEL_MAGIC) return 0;
+    if (w.gear==0x80) *gear=-1;
+    else if (!w.gear) *gear=0;
+    else { int g=1; while (g<6 && !(w.gear&(1u<<(g-1)))) ++g; *gear=g; }
+    return 1;
+}
 /* How often the pad's shift buttons (Triangle up, Square down, the game's own on a pad) were pressed so far. */
 void runtime_pad_shifts(unsigned *up, unsigned *down) {
     pthread_mutex_lock(&lock); *up=pad_shift_up; *down=pad_shift_down; pthread_mutex_unlock(&lock);
@@ -878,12 +892,15 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (is_wheel_port(handle)) { wheel_sample(data,bbgpu_overlay_captures_input()); wheel_last_read=*data; }
     if (exit_suppressed || bbgpu_overlay_captures_input()) neutralize_pad(data);
     pad_last_read=*data; pad_was_read=true;
-    if (!is_wheel_port(handle)) {   /* the manual gearbox's buttons, for the motion rig: Triangle up, Square down */
-        static uint32_t was;
-        const uint32_t now_down=data->buttons&~was;
-        if (now_down&BTN_TRIANGLE) ++pad_shift_up;
-        if (now_down&BTN_SQUARE) ++pad_shift_down;
-        was=data->buttons;
+    {   /* the manual gearbox's buttons, for the motion rig: on a pad Triangle up and Square down, on a wheel its
+         * paddles (R1 up, L1 down, as Wheel Setup maps them) */
+        static uint32_t was_pad, was_wheel;
+        const bool wheel=is_wheel_port(handle);
+        uint32_t *was=wheel ? &was_wheel : &was_pad;
+        const uint32_t now_down=data->buttons&~*was;
+        if (now_down&(wheel ? BTN_R1 : BTN_TRIANGLE)) ++pad_shift_up;
+        if (now_down&(wheel ? BTN_L1 : BTN_SQUARE)) ++pad_shift_down;
+        *was=data->buttons;
     }
 #ifdef _WIN32
     { static int armed; if (data->buttons && !armed && BB_DIAGNOSTIC_ENV("DR_WATCH")) { armed=1; watch_install(data); } }

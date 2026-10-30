@@ -24,4 +24,5 @@ void runtime_rig_config(const char *key, const char *value);
 int runtime_pad_pedals(float *throttle, float *brake, float *clutch);
 int runtime_pad_steering(float *steering);
 void runtime_pad_shifts(unsigned *up, unsigned *down);
+int runtime_pad_shifter(int *gear);
 #endif

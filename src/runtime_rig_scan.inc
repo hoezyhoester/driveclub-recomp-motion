@@ -693,7 +693,7 @@ static void rig_estimate(float *rpm, float *gear, float speed, float dt, float t
     if (up_n!=est.up_seen || down_n!=est.down_seen) {
         if (speed>2.0f && up_n!=est.up_seen && !est.manual) {
             est.manual=true;
-            if (!est.told_manual) { est.told_manual=true; printf("Rig: manual gearbox: the gear follows the shift buttons (Triangle up, Square down)\n"); }
+            if (!est.told_manual) { est.told_manual=true; printf("Rig: manual gearbox: the gear follows the shift buttons (Triangle up and Square down on a pad, the paddles on a wheel)\n"); }
         }
         /* counted from first gear at the start of the race, whether or not the gearbox was known to be manual yet */
         est.manual_gear+=(int)(up_n-est.up_seen)-(int)(down_n-est.down_seen);
@@ -701,8 +701,20 @@ static void rig_estimate(float *rpm, float *gear, float speed, float dt, float t
         if (est.manual_gear>7) est.manual_gear=7;
         est.up_seen=up_n; est.down_seen=down_n;
     }
-    if (est.manual) {
-        const int g=est.manual_gear;
+    /* an H-pattern shifter: its gear as it is (reverse -1, neutral 0) */
+    int hgear;
+    const bool shifter=runtime_pad_shifter(&hgear)>0;
+    if (shifter && !est.told_manual) { est.told_manual=true; printf("Rig: the gear follows the H-pattern shifter\n"); }
+    if (shifter && hgear<=0) {
+        /* neutral: the revs follow the throttle; reverse: as first gear, backwards */
+        const float r=hgear==0 || speed<0.5f ? EST_IDLE+throttle*(0.75f*EST_RED-EST_IDLE) : fmaxf(speed/EST_V(1)*EST_RED,EST_IDLE+throttle*0.35f*EST_RED);
+        target=fminf(r,EST_RED);
+        est.rpm+=(target-est.rpm)*fminf(1.0f,dt/0.08f);
+        *rpm=est.rpm*rig_rpm_scale_cfg; *gear=(float)hgear;
+        return;
+    }
+    if (est.manual || shifter) {
+        const int g=shifter ? hgear : est.manual_gear;
         float v=g<=6 ? EST_V(g) : EST_V(6)*0.85f;
         if (est.red_v[g]>v) v=est.red_v[g];
         if (speed>v) { est.red_v[g]=speed; v=speed; }   /* past the model's red line: this car's gear is longer */
