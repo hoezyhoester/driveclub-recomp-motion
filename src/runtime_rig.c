@@ -614,6 +614,7 @@ static void rig_camera_step(int slot, uint64_t now, const RigInputs *in) {
         cam.lead=slot; cam.us=0;
         /* another car (a new race, a replay): its object is found again */
         cam.vehicle=0; cam.state=0; cam.testing=false; cam.told=false;
+        est.reset=true;   /* another car or a new race: the manual gearbox starts in first */
         printf("Rig: following the camera's car (target %p); without a Logitech wheel the motion comes from its velocity\n",
                rig_targets[slot].target);
     }

@@ -77,6 +77,10 @@ zesbak die opschakelt bij hoge toeren en terugschakelt als de toeren zakken (sta
 lijn 7000). Het zijn niet de echte getallen van het spel, maar ze stijgen met je snelheid en vallen
 bij elke schakeling terug. Daarmee werken toerental- en schakel-effecten op een ButtKicker in
 Sim Racing Studio of SimHub. In SpaceMonkey staat bij "engine" het toerental en de versnelling.
+Rij je met handbak op een controller (Driehoek = opschakelen, Vierkant = terugschakelen), dan volgt
+de versnelling je eigen schakelknoppen, vanaf de eerste versnelling bij de start van elke race. De
+toeren rekenen dan met jouw versnelling; de eerste keer in een versnelling leert het spel hoe ver die
+doorloopt.
 Wil je de toeren hoger of lager voor je ButtKicker? Zet dan in default.ini een factor:
   motion_rpm_scale = 1.0     (2.0 = twee keer zo hoog)
 

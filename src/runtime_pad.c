@@ -99,6 +99,11 @@ static void touch_click(PadData *d, int right) {
  * game has read a pad. */
 static PadData pad_last_read;   /* the last read of any port, under lock */
 static bool pad_was_read;
+static unsigned pad_shift_up, pad_shift_down;
+/* How often the pad's shift buttons (Triangle up, Square down, the game's own on a pad) were pressed so far. */
+void runtime_pad_shifts(unsigned *up, unsigned *down) {
+    pthread_mutex_lock(&lock); *up=pad_shift_up; *down=pad_shift_down; pthread_mutex_unlock(&lock);
+}
 int runtime_pad_pedals(float *throttle, float *brake, float *clutch) {
     pthread_mutex_lock(&lock);
     WheelExtension w; memcpy(&w,wheel_last_read.extension,sizeof w);
@@ -873,6 +878,13 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (is_wheel_port(handle)) { wheel_sample(data,bbgpu_overlay_captures_input()); wheel_last_read=*data; }
     if (exit_suppressed || bbgpu_overlay_captures_input()) neutralize_pad(data);
     pad_last_read=*data; pad_was_read=true;
+    if (!is_wheel_port(handle)) {   /* the manual gearbox's buttons, for the motion rig: Triangle up, Square down */
+        static uint32_t was;
+        const uint32_t now_down=data->buttons&~was;
+        if (now_down&BTN_TRIANGLE) ++pad_shift_up;
+        if (now_down&BTN_SQUARE) ++pad_shift_down;
+        was=data->buttons;
+    }
 #ifdef _WIN32
     { static int armed; if (data->buttons && !armed && BB_DIAGNOSTIC_ENV("DR_WATCH")) { armed=1; watch_install(data); } }
 #endif

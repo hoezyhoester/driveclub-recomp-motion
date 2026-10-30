@@ -23,4 +23,5 @@ void runtime_rig_config(const char *key, const char *value);
 /* runtime_pad.c: what the player presses, for the packet. Pedals 0..1, steering -1 (left) .. 1 (right). */
 int runtime_pad_pedals(float *throttle, float *brake, float *clutch);
 int runtime_pad_steering(float *steering);
+void runtime_pad_shifts(unsigned *up, unsigned *down);
 #endif

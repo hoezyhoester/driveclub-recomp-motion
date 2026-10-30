@@ -250,7 +250,12 @@ static volatile uintptr_t rig_hud_subject_at;
 static void rig_gear_reset(void);
 #define EST_IDLE 850.0f
 #define EST_RED 7000.0f
-static struct { int gear; float rpm, top, hold; bool told; } est={1,EST_IDLE,0,0,false};
+static struct {
+    int gear; float rpm, top, hold; bool told;
+    /* a manual gearbox on a pad: the gear follows the shift buttons; each gear's speed at the red line is learnt */
+    bool manual, told_manual; unsigned up_seen, down_seen; int manual_gear; float red_v[8];
+    bool reset;   /* a new race: first gear */
+} est={1,EST_IDLE,0,0,false,false,false,0,0,1,{0},false};
 static bool scan_known_display(uintptr_t hud) {
     rig_gear_reset();
     uint64_t a=0, b=0; float r;
@@ -682,6 +687,35 @@ static void rig_estimate(float *rpm, float *gear, float speed, float dt, float t
     /* the speed at the red line in gear g (1..6) */
     #define EST_V(g) (top*ratio[5]/ratio[(g)-1])
     float target;
+    /* the shift buttons: pressed while driving, the gearbox is manual and the gear follows them from then on */
+    unsigned up_n, down_n; runtime_pad_shifts(&up_n,&down_n);
+    if (est.reset) { est.reset=false; est.manual_gear=1; est.up_seen=up_n; est.down_seen=down_n; }
+    if (up_n!=est.up_seen || down_n!=est.down_seen) {
+        if (speed>2.0f && up_n!=est.up_seen && !est.manual) {
+            est.manual=true;
+            if (!est.told_manual) { est.told_manual=true; printf("Rig: manual gearbox: the gear follows the shift buttons (Triangle up, Square down)\n"); }
+        }
+        /* counted from first gear at the start of the race, whether or not the gearbox was known to be manual yet */
+        est.manual_gear+=(int)(up_n-est.up_seen)-(int)(down_n-est.down_seen);
+        if (est.manual_gear<1) est.manual_gear=1;
+        if (est.manual_gear>7) est.manual_gear=7;
+        est.up_seen=up_n; est.down_seen=down_n;
+    }
+    if (est.manual) {
+        const int g=est.manual_gear;
+        float v=g<=6 ? EST_V(g) : EST_V(6)*0.85f;
+        if (est.red_v[g]>v) v=est.red_v[g];
+        if (speed>v) { est.red_v[g]=speed; v=speed; }   /* past the model's red line: this car's gear is longer */
+        float r=speed<0.5f ? EST_IDLE+throttle*(0.75f*EST_RED-EST_IDLE) : speed/v*EST_RED;
+        if (g==1 && speed>=0.5f) r=fmaxf(r,EST_IDLE+throttle*0.35f*EST_RED);
+        /* below idle in a high gear the clutch would be in: idle, rising with the throttle */
+        if (r<EST_IDLE) r=EST_IDLE+throttle*0.1f*EST_RED;
+        target=fminf(r,EST_RED);
+        est.gear=g;
+        est.rpm+=(target-est.rpm)*fminf(1.0f,dt/0.08f);
+        *rpm=est.rpm*rig_rpm_scale_cfg; *gear=(float)g;
+        return;
+    }
     if (speed<0.5f) { est.gear=1; target=EST_IDLE+throttle*(0.75f*EST_RED-EST_IDLE); }
     else {
         float r=speed/EST_V(est.gear)*EST_RED;
