@@ -206,6 +206,10 @@ typedef struct {
     uint16_t drops, n_events;
     float event_t[SCAN_EVENTS];   /* drop times (s) */
     bool in_range;
+    /* against the car's speed: an engine's ratio to it holds within a gear and jumps between gears, so its
+     * ratios gather into a few levels (a wheel's or a gearbox output's into one) */
+    float ratio_prev, level[6];
+    uint16_t ratio_n, ratio_stable, level_n[6];
 } ScanFloat;
 typedef struct {
     int32_t last; int16_t lo, hi; uint16_t ups, changes; bool ok;
@@ -302,7 +306,10 @@ static void scan_reset(uintptr_t vehicle, uintptr_t state, uintptr_t hud) {
         scan.obj[m].f[k].still_min=1e30f; scan.obj[m].f[k].still_max=-1e30f;
         scan.obj[m].i[k].ok=true; scan.obj[m].i[k].lo=32767; scan.obj[m].i[k].hi=-32768;
     }
-    scan.known=scan_known_display(hud);
+    /* the display car's +0x1d8->+0x10 +0x3d8 read an engine on one drive and, on the next, 2200..2400 rpm all
+     * the time - standing still and at the limiter alike: not the player's engine every time. Searched for now. */
+    (void)scan_known_display;
+    rig_gear_reset();
     if (!scan.known)
         printf("Rig: looking for the engine's RPM and gear in %d objects (%s the in-game display's car); drive a few minutes with gear changes\n",
                scan.n_obj,hud ? "with" : "without");
@@ -316,6 +323,39 @@ static bool scan_rpm_range(float lo, float hi, float *scale) {
     if (lo>=0.3f && hi<=12.0f && hi-lo>=1.5f) { *scale=1000.0f; return true; }
     if (lo>=0.0f && hi<=1.2f && hi-lo>=0.3f) { *scale=8000.0f; return true; }
     return false;
+}
+
+/* one ratio sample: steady from the last one (2%) counts, and goes to its level (4%) */
+static void scan_ratio(ScanFloat *f, float r) {
+    const float prev=f->ratio_prev; f->ratio_prev=r;
+    if (f->ratio_n<65535) ++f->ratio_n;
+    if (!(prev>0.0f) || fabsf(r-prev)>0.02f*prev) return;
+    if (f->ratio_stable<65535) ++f->ratio_stable;
+    int best=-1; float bd=0.04f;
+    for (int i=0;i<6;++i) if (f->level_n[i]) { const float d=fabsf(r-f->level[i])/f->level[i]; if (d<bd) { bd=d; best=i; } }
+    if (best>=0) { if (f->level_n[best]<65535) ++f->level_n[best]; f->level[best]+=(r-f->level[best])/(float)(f->level_n[best]<64 ? f->level_n[best] : 64); return; }
+    int at=-1; uint16_t least=65535;
+    for (int i=0;i<6;++i) if (f->level_n[i]<least) { least=f->level_n[i]; at=i; }
+    if (least<6) { f->level[at]=r; f->level_n[at]=1; }
+}
+
+/* how well a field moves like an engine against the speed: 0 when not; the levels that count, highest first */
+static int scan_ratio_score(const ScanFloat *f, float *levels, int *n_levels) {
+    *n_levels=0;
+    if (f->ratio_n<200 || f->ratio_stable<0.6f*f->ratio_n) return 0;
+    unsigned in_levels=0; float lv[6]; int n=0;
+    for (int i=0;i<6;++i) if (f->level_n[i]>=0.06f*f->ratio_stable && f->level_n[i]>=15) { lv[n++]=f->level[i]; in_levels+=f->level_n[i]; }
+    if (n<3 || in_levels<0.7f*f->ratio_stable) return 0;
+    for (int a=0;a<n;++a) for (int b=a+1;b<n;++b) if (lv[b]>lv[a]) { const float t=lv[a]; lv[a]=lv[b]; lv[b]=t; }
+    if (lv[0]<1.6f*lv[n-1]) return 0;
+    for (int a=0;a<n;++a) levels[a]=lv[a];
+    *n_levels=n;
+    int score=n*100+(int)(100.0f*f->ratio_stable/f->ratio_n);
+    if (f->still_max>=f->still_min) {   /* standing still: an engine idles, above zero and well below its top */
+        const bool idles=f->still_min>0.03f*f->max && f->still_max<=0.5f*f->max;
+        score+=idles ? 200 : -300;
+    }
+    return score;
 }
 
 /* drops of field f matched by steps up of gear g, within 0.4 s */
@@ -363,6 +403,48 @@ static void scan_report(bool final) {
         for (int x=at;x>0 && gear[x].score>gear[x-1].score;--x) { Cand t=gear[x]; gear[x]=gear[x-1]; gear[x-1]=t; }
     }
     printf("Rig: after %.0f s of driving, %d RPM and %d gear candidates%s\n",scan.t,n_rpm,n_gear,final ? " (final)" : "");
+    /* fields that move like an engine against the car's speed: a few steady levels, one a gear */
+    typedef struct { int o, k, score, n; float lv[6], scale; } RCand;
+    RCand rc[8]; int n_rc=0;
+    for (int m=0;m<scan.n_obj;++m) for (int k=0;k<SCAN_FIELDS;++k) {
+        const ScanFloat *f=&scan.obj[m].f[k]; float scale; RCand c;
+        if (!f->in_range) continue;
+        c.score=scan_ratio_score(f,c.lv,&c.n);
+        if (c.score<=0) continue;
+        if (!scan_rpm_range(f->min,f->max,&scale)) {   /* a narrow range from little driving: by its top */
+            if (f->max>=1000.0f && f->max<=16000.0f) scale=1.0f;
+            else if (f->max>=100.0f && f->max<=1700.0f) scale=60.0f/(2.0f*3.14159265f);
+            else continue;
+        }
+        bool dup=false;
+        for (int x=0;x<n_rc;++x) { const ScanFloat *o2=&scan.obj[rc[x].o].f[rc[x].k]; if (o2->min==f->min && o2->max==f->max) dup=true; }
+        if (dup) continue;
+        c.o=m; c.k=k; c.scale=scale;
+        int at=n_rc<8 ? n_rc++ : 7;
+        if (at==7 && n_rc==8 && rc[7].score>=c.score) continue;
+        rc[at]=c;
+        for (int x=at;x>0 && rc[x].score>rc[x-1].score;--x) { RCand t=rc[x]; rc[x]=rc[x-1]; rc[x-1]=t; }
+    }
+    for (int r=0;r<n_rc;++r) {
+        const ScanObject *o=&scan.obj[rc[r].o]; const ScanFloat *f=&o->f[rc[r].k];
+        char line[512]; int n=snprintf(line,sizeof line,"Rig: engine candidate %d: %s +0x%x, %.0f..%.0f rpm, steady %.0f%%, ",r+1,o->label,rc[r].k*4,
+                                       f->min*rc[r].scale,f->max*rc[r].scale,100.0f*f->ratio_stable/f->ratio_n);
+        if (f->still_max>=f->still_min) n+=snprintf(line+n,sizeof line-n,"%.0f..%.0f rpm standing still, ",f->still_min*rc[r].scale,f->still_max*rc[r].scale);
+        else n+=snprintf(line+n,sizeof line-n,"not seen standing still, ");
+        n+=snprintf(line+n,sizeof line-n,"%d gears (rpm per km/h):",rc[r].n);
+        for (int g=0;g<rc[r].n;++g) n+=snprintf(line+n,sizeof line-n," %.0f",rc[r].lv[g]*rc[r].scale/3.6f);
+        printf("%s\n",line);
+    }
+    if (n_rc>0 && (n_rc==1 || rc[0].score-rc[1].score>=100 || scan.reports>=4)) {
+        const ScanObject *o=&scan.obj[rc[0].o];
+        const uintptr_t at=o->address+rc[0].k*4;
+        if (at!=scan.rpm_at) {
+            scan.rpm_at=at; scan.rpm_scale=rc[0].scale; scan.gear_at=0; rig_gear_reset();
+            snprintf(scan.rpm_label,sizeof scan.rpm_label,"%s +0x%x",o->label,rc[0].k*4);
+            printf("Rig: using RPM from %s; the gear is worked out from RPM against speed\n",scan.rpm_label);
+        }
+        return;
+    }
     for (int r=0;r<n_rpm;++r) {
         const ScanObject *o=&scan.obj[rpm[r].o]; const ScanFloat *f=&o->f[rpm[r].k];
         char still[48]="not seen standing still";
@@ -375,14 +457,14 @@ static void scan_report(bool final) {
         printf("Rig: gear candidate %d: %s +0x%x, %d..%d, %u steps up, %d at RPM drops\n",r+1,o->label,gear[r].k*4,
                (int)g->lo,(int)g->hi,(unsigned)g->ups,gear[r].matched);
     }
-    /* one that stands out is used now: twice the drops of the next, or the only one; a gear only at those drops */
-    if (n_rpm>0 && scan.obj[rpm[0].o].f[rpm[0].k].drops>=5 && (n_rpm==1 || rpm[0].score>=2*rpm[1].score || rpm[0].score-rpm[1].score>=60)) {
+    /* the drops alone picked a gearbox's side and another car's engine before: listed, not used */
+    if (false && n_rpm>0 && scan.obj[rpm[0].o].f[rpm[0].k].drops>=5 && (n_rpm==1 || rpm[0].score>=2*rpm[1].score || rpm[0].score-rpm[1].score>=60)) {
         const ScanObject *o=&scan.obj[rpm[0].o];
         scan.rpm_at=o->address+rpm[0].k*4; scan.rpm_scale=rpm[0].scale;
         snprintf(scan.rpm_label,sizeof scan.rpm_label,"%s +0x%x",o->label,rpm[0].k*4);
         printf("Rig: using RPM from %s\n",scan.rpm_label);
     }
-    if (scan.rpm_at && n_gear>0 && gear[0].matched>=3) {
+    if (false && scan.rpm_at && n_gear>0 && gear[0].matched>=3) {
         const ScanObject *o=&scan.obj[gear[0].o];
         scan.gear_at=o->address+gear[0].k*4; scan.gear_type=0;
         snprintf(scan.gear_label,sizeof scan.gear_label,"%s +0x%x",o->label,gear[0].k*4);
@@ -480,6 +562,7 @@ static void scan_sample(uintptr_t vehicle, uintptr_t state, float speed, float t
                         f->event_t[f->n_events%SCAN_EVENTS]=scan.t; ++f->n_events; ++f->drops;
                     }
                     f->hist[scan.hist_pos]=x;
+                    if (speed>4.0f && x>0.0f) scan_ratio(f,x/speed);
                 }
             }
             ScanInt *g=&o->i[k];
@@ -555,7 +638,7 @@ static float rig_gear_from_ratio(float engine, float speed, float dt) {
 
 /* the gears learnt so far, to the log with the status line */
 static void rig_gear_report(void) {
-    if (!scan.known || !rig_gear.n) return;
+    if (!scan.rpm_at || !rig_gear.n) return;
     unsigned total=0; for (int i=0;i<rig_gear.n;++i) total+=rig_gear.hits[i];
     const unsigned need=total/30>20 ? total/30 : 20;
     char line[256]; int n=snprintf(line,sizeof line,"Rig: gears learnt (rpm per km/h):");
